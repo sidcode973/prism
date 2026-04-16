@@ -1,0 +1,36 @@
+# =========================
+# 1. DEPENDENCIES
+# =========================
+node_modules/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# =========================
+# 2. NEXT.JS BUILD & PROD
+# =========================
+.next/
+out/
+build/
+.vercel
+
+# =========================
+# 3. TYPESCRIPT & LOGS
+# =========================
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# =========================
+# 4. TESTING & ENV
+# =========================
+/coverage
+.env*.local
+*.pem

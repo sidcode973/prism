@@ -1,0 +1,6 @@
+polars
+flaml[automl]
+shap
+groq
+numpy
+pandas
