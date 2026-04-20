@@ -25,3 +25,9 @@ class TrainingConfigurationError(PrismCoreError):
         self.node_id = node_id
         self.message = f"Training Error in Node '{node_id}': {message}"
         super().__init__(self.message)
+class PlottingConfigurationError(PrismCoreError):
+    """Raised when the plotting configuration is missing required axes or columns."""
+    def __init__(self, node_id: str, message: str):
+        self.node_id = node_id
+        self.message = f"Plotting Error in Node '{node_id}': {message}"
+        super().__init__(self.message)
