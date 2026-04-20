@@ -4,3 +4,6 @@ shap
 groq
 numpy
 pandas
+pydantic 
+python-dotenv
+pyarrow

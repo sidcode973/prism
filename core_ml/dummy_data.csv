@@ -1,0 +1,26 @@
+ID,Name,Age,Salary,Address
+1,Shlok,21,50000,Hostel A
+2,Akshita,22,,Hostel B
+3,Aryan,,60000,Hostel C
+4,Mahek,20,55000,
+5,Bhavya,21,70000,Hostel A
+6,Rahul,23,62000,Hostel B
+7,Priya,21,,Hostel C
+8,Amit,24,80000,
+9,Neha,22,58000,Hostel A
+10,Karan,,54000,Hostel B
+11,Sneha,21,51000,Hostel C
+12,Ravi,25,90000,Hostel A
+13,Pooja,22,,Hostel B
+14,Vikram,23,67000,Hostel C
+15,Anjali,,59000,
+16,Rohit,21,53000,Hostel A
+17,Kavita,24,75000,Hostel B
+18,Suresh,22,56000,Hostel C
+19,Gita,,61000,Hostel A
+20,Raj,25,85000,
+21,Meera,21,,Hostel C
+22,Sanjay,23,69000,Hostel A
+23,Anita,22,57000,Hostel B
+24,Vijay,,72000,Hostel C
+25,Sunita,24,78000,Hostel A
