@@ -5,13 +5,13 @@ from prism_ml.agent.router import PrismRouterAgent
 from prism_ml.clean.cleaner import PrismCleaner
 from prism_ml.train.trainer import PrismTrainer
 from prism_ml.exceptions import PrismCoreError, TrainingConfigurationError
-
+from prism_ml.plot.plotter import PrismPlotter
 class PrismDAGExecutor:
     def __init__(self):
         print("⚙️ Booting Prism DAG Execution Engine...")
         self.cleaner = PrismCleaner()
         self.trainer = PrismTrainer()
-        # You'll add self.plotter = PrismPlotter() here later!
+        self.plotter = PrismPlotter() 
 
     def pre_flight_check(self, nodes: Dict[str, Any], execution_order: list):
         """Scans the graph for fatal user errors BEFORE we spend compute power."""
@@ -67,8 +67,13 @@ class PrismDAGExecutor:
                     results["loss"] = model.best_loss
 
                 elif action == "generate_plot":
-                    # Ready for your future plotting node!
-                    print("Plotting logic goes here...")
+                    # Hand the Polars dataframe to the charting engine
+                    plot_data = self.plotter.generate_plot(node_id, current_data, params)
+                    
+                    # Store multiple charts in an array for Bhavya Shah's frontend
+                    if "charts" not in results:
+                        results["charts"] = []
+                    results["charts"].append(plot_data)
                     
                 else:
                     raise PrismCoreError(f"Unknown action type: {action}")

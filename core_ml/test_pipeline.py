@@ -1,61 +1,54 @@
 import json
 from prism_ml.profile.profiler import PrismProfiler
 from prism_ml.agent.router import PrismRouterAgent
-from prism_ml.clean.cleaner import PrismCleaner
-from prism_ml.train.trainer import PrismTrainer
+from prism_ml.orchestrator import PrismDAGExecutor
 
 if __name__ == "__main__":
-    print("=== PROJECT PRISM: AUTONOMOUS AGENT TEST ===\n")
+    print("=== PROJECT PRISM: AGENTIC EDA TEST ===\n")
     
-    # 1. The minimal human prompt (No dropping instructions!)
-    test_prompt = "Build an xgboost model to predict Salary for me."
-    file_name = "dummy_data.csv"
+    # Initialize the sub-systems
+    profiler = PrismProfiler()
+    agent = PrismRouterAgent()
+    executor = PrismDAGExecutor()
+    
+    file_path = "dummy_data.csv"
+    # Notice how vague this prompt is. We are testing the AI's "Brain".
+    user_prompt = "Clean this data and visualize the correlations and distributions like a Data Scientist."
     
     try:
-        # --- STAGE 0: PROFILING (The Eyes) ---
-        print("--- STAGE 0: PROFILING ---")
-        profiler = PrismProfiler()
-        schema_profile = profiler.generate_profile(file_name)
-        print(schema_profile)
+        # 1. Profile
+        print("--- [1] PROFILING DATA ---")
+        profile = profiler.generate_profile(file_path)
         
-        # --- STAGE 1: AGENTIC ROUTING (The Brain) ---
-        print("\n--- STAGE 1: AI CONTRACT GENERATION ---")
-        agent = PrismRouterAgent()
-        json_string = agent.generate_contract(
-            user_prompt=test_prompt,
-            user_id="usr_bhavya_01",
-            project_id="prj_alpha",
-            file_name=file_name,
-            data_profile=schema_profile # Passing the Eyes to the Brain!
+        # 2. Route
+        print("\n--- [2] AI ROUTING (Llama 3) ---")
+        contract_str = agent.generate_contract(
+            user_prompt=user_prompt, 
+            user_id="usr_bhavya_01", 
+            project_id="prj_alpha", 
+            file_name=file_path, 
+            data_profile=profile
         )
+        contract = json.loads(contract_str)
         
-        print("\n🧠 AI Generated Contract:")
-        print(json_string)
+        print(f"🧠 AI decided to run these nodes: {contract['execution_order']}")
         
-        # Parse the JSON string back into a dictionary for the Muscle
-        contract_dict = json.loads(json_string)
-        clean_params = contract_dict["nodes"][0]["parameters"]
-        train_params = contract_dict["nodes"][1]["parameters"]
+        # 3. Execute
+        print("\n--- [3] EXECUTING DAG ---")
+        final_response = executor.execute_graph(contract, file_path)
+        
+        # Print a clean summary of what the engine actually built
+        print("\n✅ FINAL PAYLOAD SUMMARY:")
+        if final_response["status"] == "success":
+            results = final_response.get("results", {})
+            if "cleaned_data" in results:
+                print(" - Data successfully cleaned!")
+            if "charts" in results:
+                print(f" - Generated {len(results['charts'])} charts:")
+                for chart in results['charts']:
+                    print(f"    📊 {chart['chart_type'].upper()}: {chart['title']}")
+        else:
+            print(f"⚠️ Engine Warning: {final_response['message']}")
 
-        # --- STAGE 2: CLEANING (The Muscle) ---
-        print("\n--- STAGE 2: CLEANING ---")
-        cleaner = PrismCleaner()
-        cleaned_df = cleaner.execute_cleaning(
-            node_id="step_1_clean",
-            file_path=file_name,
-            parameters=clean_params
-        )
-        print("\nCleaned Data Preview:")
-        print(cleaned_df.head(5))
-        
-        # --- STAGE 3: TRAINING (The Muscle) ---
-        print("\n--- STAGE 3: TRAINING ---")
-        trainer = PrismTrainer()
-        best_model = trainer.execute_training(
-            node_id="step_2_train",
-            df=cleaned_df,
-            parameters=train_params
-        )
-        
     except Exception as e:
-        print(f"\n❌ PIPELINE CRASHED: {e}")
+        print(f"\n🚨 TEST CRASHED: {e}")

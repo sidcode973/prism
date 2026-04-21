@@ -61,20 +61,32 @@ class PrismRouterAgent:
         You must analyze this profile to make autonomous decisions:
         {data_profile}
         
-        RULES:
-        1. Automatically add columns to the 'drop_columns' array if they are useless for Machine Learning (e.g., IDs, Addresses, Names, or columns with 100% unique strings).
-        2. If a column has nulls, select a single global 'impute_strategy' as a string (must be exactly "median" or "mode"). DO NOT output a dictionary.
+        RULES FOR CLEANING:
+        1. Automatically drop columns useless for ML (IDs, Names, 100% unique strings).
+        2. Impute nulls with a single global strategy ("median" or "mode").
 
-        You must output ONLY valid JSON. No markdown, no conversational text.
-        The JSON must match this exact structure:
+        RULES FOR VISUALIZATION (THE LOGIC TREE):
+        You have access to 5 chart types: 'scatter', 'bar', 'histogram', 'boxplot' (for outliers), and 'heatmap' (for feature correlation).
+        You can generate MULTIPLE 'generate_plot' nodes to build a dashboard.
+        
+        - Rule A (Strict): If the user specifies a chart and columns, generate exactly ONE node for that request.
+        - Rule B (Semi-Strict): If the user specifies a chart type but NO columns (e.g., "Show me boxplots"), generate a separate node for EVERY column where that chart makes mathematical sense based on the data profile.
+        - Rule C (Agentic): If the user just says "Visualize" or doesn't specify, you MUST act as a Senior Data Scientist. Generate 3 to 5 nodes that tell a story:
+             1. Always include a 'heatmap' to show correlation.
+             2. Include a 'histogram' of the most likely Target variable.
+             3. Include 'scatter' plots for the top continuous variables.
+
+        You must output ONLY valid JSON matching this exact structure(You are allowed to add multiple plot node_id):
         {{
-            "metadata": {{"user_id": "{user_id}", "project_id": "{project_id}", "tier": "free", "max_time_budget_seconds": 300}},
-            "dataset": {{"file_name": "{file_name}", "minio_path": "s3://prism-data/{user_id}/{file_name}"}},
+            "metadata": {{"user_id": "{user_id}", "project_id": "{project_id}"}},
+            "dataset": {{"file_name": "{file_name}"}},
             "nodes": [
-                {{"node_id": "step_1_clean", "action_type": "clean_data", "parameters": {{"drop_columns": [], "impute_strategy": "median"}} }},
-                {{"node_id": "step_2_train", "action_type": "train_model", "parameters": {{"target_column": "target_name_here", "time_budget_seconds": 10, "model_family": ["xgboost", "rf"]}} }}
+                {{"node_id": "clean_1", "action_type": "clean_data", "parameters": {{"drop_columns": [], "impute_strategy": "median"}} }},
+                {{"node_id": "plot_1", "action_type": "generate_plot", "parameters": {{"chart_type": "heatmap"}} }},
+                {{"node_id": "plot_2", "action_type": "generate_plot", "parameters": {{"chart_type": "histogram", "target_col": "Salary"}} }},
+                {{"node_id": "plot_3", "action_type": "generate_plot", "parameters": {{"chart_type": "boxplot", "target_col": "Age"}} }}
             ],
-            "execution_order": ["step_1_clean", "step_2_train"]
+            "execution_order": ["clean_1", "plot_1", "plot_2", "plot_3"]
         }}
         """
         for attempt in range(3):
