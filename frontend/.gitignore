@@ -34,3 +34,6 @@ yarn-error.log*
 /coverage
 .env*.local
 *.pem
+# clerk configuration (can include secrets)
+/.clerk/
+.env.local
