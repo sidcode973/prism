@@ -4,17 +4,16 @@ from prism_ml.agent.router import PrismRouterAgent
 from prism_ml.orchestrator import PrismDAGExecutor
 
 if __name__ == "__main__":
-    print("=== PROJECT PRISM: AGENTIC EDA TEST ===\n")
+    print("=== PROJECT PRISM: MASTER PIPELINE TEST ===\n")
     
-    # Initialize the sub-systems
     profiler = PrismProfiler()
     agent = PrismRouterAgent()
     executor = PrismDAGExecutor()
     
     file_path = "dummy_data.csv"
-    # Notice how vague this prompt is. We are testing the AI's "Brain".
-    user_prompt = "Clean this data and visualize the correlations and distributions like a Data Scientist."
     
+    # We use a broad prompt to trigger the "Senior Data Scientist" agentic rules
+    user_prompt = "Clean this dataset, visualize the correlations and a scatter plot, and then train an xgboost model to predict Salary."    
     try:
         # 1. Profile
         print("--- [1] PROFILING DATA ---")
@@ -32,21 +31,22 @@ if __name__ == "__main__":
         contract = json.loads(contract_str)
         
         print(f"🧠 AI decided to run these nodes: {contract['execution_order']}")
+        print(f"📄 Clean Data Parameters Generated: {json.dumps(contract['nodes'][0]['parameters'], indent=2)}")
         
         # 3. Execute
         print("\n--- [3] EXECUTING DAG ---")
         final_response = executor.execute_graph(contract, file_path)
         
-        # Print a clean summary of what the engine actually built
+        # Print a clean summary for the frontend
         print("\n✅ FINAL PAYLOAD SUMMARY:")
         if final_response["status"] == "success":
             results = final_response.get("results", {})
             if "cleaned_data" in results:
-                print(" - Data successfully cleaned!")
+                print(" - Data successfully cleaned and loaded into memory!")
             if "charts" in results:
-                print(f" - Generated {len(results['charts'])} charts:")
+                print(f" - Generated {len(results['charts'])} charts for the UI:")
                 for chart in results['charts']:
-                    print(f"    📊 {chart['chart_type'].upper()}: {chart['title']}")
+                    print(f"    📊 [{chart['chart_type'].upper()}] {chart['title']}")
         else:
             print(f"⚠️ Engine Warning: {final_response['message']}")
 
