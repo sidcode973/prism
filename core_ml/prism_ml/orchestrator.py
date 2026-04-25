@@ -62,7 +62,7 @@ class PrismDAGExecutor:
 
                 elif action == "train_model":
                     # Trainer takes the Polars DF from the previous step
-                    model = self.trainer.execute_training(node_id, current_data, params)
+                    model = self.trainer.execute_training(node_id, current_data, params,raw_data_path)
                     results["best_model"] = str(model.best_estimator)
                     results["loss"] = model.best_loss
 

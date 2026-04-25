@@ -43,6 +43,7 @@ class PipelineContract(BaseModel):
         # --- 1. UNIQUE NODE CHECK (No Clones) ---
         if len(defined_node_ids) != len(set(defined_node_ids)):
             from collections import Counter
+            # Counter creates a dictionary of list values as keys and their count of occurance as values 
             duplicates = [id for id, count in Counter(defined_node_ids).items() if count > 1]
             raise ValueError(f"Graph Error: Duplicate node IDs generated: {duplicates}. Node IDs must be unique.")
 
@@ -116,7 +117,6 @@ class PrismRouterAgent:
              2. Include a 'histogram' of the most likely Target variable.
              3. Include 'scatter' plots for the top continuous variables.
 
-        You must output ONLY valid JSON matching this exact structure (You are allowed to add multiple plot node_id):
         You must output ONLY valid JSON matching this exact structure (You are allowed to add multiple plot node_id):
         {{
             "metadata": {{"user_id": "{user_id}", "project_id": "{project_id}"}},
