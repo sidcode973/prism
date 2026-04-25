@@ -1,15 +1,24 @@
-from fastapi import FastAPI, Depends, HTTPException, Security, File, UploadFile # <-- NEW IMPORTS
+from fastapi import FastAPI, Depends, HTTPException, Security, File, UploadFile, Form
+from fastapi.responses import FileResponse # <-- ADD THIS
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Any
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.metrics import r2_score, accuracy_score
+from pydantic import BaseModel, ValidationError
+from typing import List, Dict, Any, Optional
 import os
-import shutil # <-- NEW: For saving files
+import shutil
 import jwt
+import json
+import sys
+from fastapi.responses import FileResponse
+# ==========================================
+# 1. BHAVYA'S CORE ML IMPORTS (The Black Box)
+# ==========================================
+# Make sure your editable install (pip install -e ../core_ml) is active!
+core_ml_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core_ml"))
+sys.path.append(core_ml_dir)
+from prism_ml.profile.profiler import PrismProfiler
+from prism_ml.agent.router import PrismRouterAgent
+from prism_ml.orchestrator import PrismDAGExecutor
 
 app = FastAPI()
 
@@ -22,7 +31,7 @@ app.add_middleware(
 )
 
 # ==========================================
-# 1. THE SECURITY BOUNCER
+# 2. THE SECURITY BOUNCER (Kept exactly as you built it!)
 # ==========================================
 security = HTTPBearer()
 
@@ -42,42 +51,46 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
         raise HTTPException(status_code=401, detail=f"Token error: {str(e)}")
 
 # ==========================================
-# 2. SCHEMAS
+# 3. THE PYDANTIC SHIELD (Contract Schema)
 # ==========================================
-class NodeModel(BaseModel):
+class PipelineNode(BaseModel):
     node_id: str
     action_type: str
     parameters: Dict[str, Any]
 
-class DatasetModel(BaseModel):
-    file_name: str
-    minio_path: str
+class PipelineMetadata(BaseModel):
+    user_id: str
+    project_id: str
+    tier: str = "free"
+    max_time_budget_seconds: int = 300
 
-class PipelineRequest(BaseModel):
-    metadata: Dict[str, Any]
-    dataset: DatasetModel
-    nodes: List[NodeModel]
+class DatasetInfo(BaseModel):
+    file_name: str
+    minio_path: Optional[str] = None
+
+class DAGContract(BaseModel):
+    metadata: PipelineMetadata
+    dataset: DatasetInfo
+    nodes: List[PipelineNode]
     execution_order: List[str]
 
 # ==========================================
-# 3. THE PROTECTED ML ENGINE
+# 4. INITIALIZE THE ML ENGINE
 # ==========================================
-# ---> Notice the new 'current_user_id' parameter that depends on verify_token! <---
+profiler = PrismProfiler()
+agent = PrismRouterAgent()
+executor = PrismDAGExecutor()
+
 # ==========================================
-# 2.5 SECURE FILE UPLOAD
-# ==========================================
-# ==========================================
-# 2.6 LIST SECURE DATASETS
+# 5. SECURE DATASETS ENDPOINTS (Unchanged)
 # ==========================================
 @app.get("/api/datasets")
 async def get_datasets(current_user_id: str = Depends(verify_token)):
     user_folder = os.path.join("data", current_user_id)
     
-    # If the user hasn't uploaded anything yet, return an empty list
     if not os.path.exists(user_folder):
         return {"datasets": []}
         
-    # Get all the files in their folder
     files = [f for f in os.listdir(user_folder) if os.path.isfile(os.path.join(user_folder, f))]
     return {"datasets": files}
 
@@ -85,13 +98,10 @@ async def get_datasets(current_user_id: str = Depends(verify_token)):
 async def upload_dataset(file: UploadFile = File(...), current_user_id: str = Depends(verify_token)):
     print(f"📥 Receiving file '{file.filename}' from user: {current_user_id}")
     
-    # Create a secure, user-specific folder (e.g., data/user_2bX123/)
     user_folder = os.path.join("data", current_user_id)
     os.makedirs(user_folder, exist_ok=True)
-    
     file_path = os.path.join(user_folder, file.filename)
     
-    # Save the physical file to the disk
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -99,109 +109,87 @@ async def upload_dataset(file: UploadFile = File(...), current_user_id: str = De
         return {"status": "success", "file_name": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {str(e)}")
-@app.post("/api/pipeline/run")
-async def run_pipeline(payload: PipelineRequest, current_user_id: str = Depends(verify_token)):
+
+# ==========================================
+# 6. THE NEW AI ROUTER ENDPOINT (Replaces old manual pipeline)
+# ==========================================
+@app.post("/api/run-pipeline")
+async def run_pipeline(
+    file_name: str = Form(...), 
+    prompt: str = Form(...),
+    current_user_id: str = Depends(verify_token)
+):
     print("\n" + "="*50)
-    print(f"🔒 SECURE REQUEST GRANTED FOR USER: {current_user_id}")
-    print(f"🚀 FIRING UP PIPELINE FOR: {payload.dataset.file_name}")
+    print(f"🔒 SECURE AI REQUEST GRANTED FOR USER: {current_user_id}")
+    print(f"🚀 PROMPT: '{prompt}' ON FILE: {file_name}")
     print("="*50)
 
-    nodes_by_id = {node.node_id: node for node in payload.nodes}
-    pipeline_memory = {"dataframe": None, "results": {}}
+    # Locate the previously uploaded file
+    file_path = os.path.join("data", current_user_id, file_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Dataset not found. Please upload it first.")
 
     try:
-        for step_id in payload.execution_order:
-            node = nodes_by_id.get(step_id)
-            if not node: continue
-            
-            params = node.parameters
-            print(f"\n⚙️ EXECUTING: {node.action_type.upper()}")
+        # STEP 1: Profile the data
+        print("🔍 Profiling data using Bhavya's Engine...")
+        # Passing the exact file path so Polars can read it
+        profile = profiler.generate_profile(file_path)
+        
+        # STEP 2: Ask the AI for the Architecture
+        print("🧠 Asking Llama 3 to generate DAG Contract...")
+        contract_str = agent.generate_contract(
+            user_prompt=prompt, 
+            user_id=current_user_id, 
+            project_id="dynamic_project_id_here", 
+            file_name=file_name, 
+            data_profile=profile
+        )
+        
+        # --- THE PYDANTIC SHIELD INTERVENTION ---
+        try:
+            clean_str = contract_str.replace("```json", "").replace("```", "").strip()
+            raw_json = json.loads(clean_str)
+            validated_contract = DAGContract(**raw_json)
+            print("🛡️ AI Contract passed Pydantic validation!")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=502, detail="Llama 3 returned invalid JSON format.")
+        except ValidationError as ve:
+            raise HTTPException(status_code=502, detail=f"Llama 3 missed required fields: {ve.errors()}")
 
-            # --- LOAD DATASET ---
-            if node.action_type == "load_dataset":
-                file_path = os.path.join("data", current_user_id, payload.dataset.file_name)
-                print(f"   -> Reading CSV from {file_path}")
-                pipeline_memory["dataframe"] = pd.read_csv(file_path)
-                print(f"   -> Success! Loaded {len(pipeline_memory['dataframe'])} rows.")
-
-            # --- CLEAN DATA ---
-            elif node.action_type == "clean_data":
-                df = pipeline_memory["dataframe"]
-                strategy = params.get('strategy', 'drop')
-                if strategy == 'drop': df = df.dropna()
-                elif strategy == 'mean': df = df.fillna(df.mean(numeric_only=True))
-                elif strategy == 'median': df = df.fillna(df.median(numeric_only=True))
-                pipeline_memory["dataframe"] = df
-                print(f"   -> Applied '{strategy}' strategy. Dataset now has {len(df)} rows.")
-            # --- PLOT GRAPH ---
-            elif node.action_type == "plot_graph":
-                df = pipeline_memory["dataframe"]
-                x_col = params.get('xAxis')
-                y_col = params.get('yAxis')
-                chart_type = params.get('type', 'scatter')
-
-                if not x_col or not y_col or x_col not in df.columns or y_col not in df.columns:
-                    raise ValueError(f"Missing or invalid columns for graph: '{x_col}' or '{y_col}'")
-
-                print(f"   -> Generating {chart_type} graph for {x_col} vs {y_col}...")
-                
-                # Take a sample of 100 rows so we don't crash the user's browser
-                plot_df = df[[x_col, y_col]].dropna().head(100)
-                
-                # Convert the dataframe to a list of dictionaries: [{"x": 10, "y": 20}, ...]
-                graph_data = plot_df.rename(columns={x_col: "x", y_col: "y"}).to_dict(orient="records")
-                
-                # Save it to our results payload!
-                pipeline_memory["results"]["graphData"] = graph_data
-                pipeline_memory["results"]["graphConfig"] = {
-                    "xLabel": x_col, 
-                    "yLabel": y_col, 
-                    "type": chart_type
-                }
-                print("   -> 📊 Graph data extracted successfully!")    
-
-            # --- TRAIN MODEL ---
-            elif node.action_type == "train_model":
-                df = pipeline_memory["dataframe"]
-                target = params.get('target')
-                split = int(params.get('split', 20)) / 100.0
-
-                if not target or target not in df.columns:
-                    raise ValueError(f"Target column '{target}' missing from dataset!")
-
-                print(f"   -> Preparing features and predicting '{target}'...")
-                numeric_df = df.select_dtypes(include=['number'])
-                X = numeric_df.drop(columns=[target])
-                y = numeric_df[target]
-
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=split, random_state=42)
-
-                print("   -> Training Random Forest Model...")
-                if y.nunique() > 20:
-                    model = RandomForestRegressor(random_state=42)
-                    model.fit(X_train, y_train)
-                    score = r2_score(y_test, model.predict(X_test))
-                    metric = "R² Score"
-                else:
-                    model = RandomForestClassifier(random_state=42)
-                    model.fit(X_train, y_train)
-                    score = accuracy_score(y_test, model.predict(X_test))
-                    metric = "Accuracy"
-
-                final_score_percentage = round(score * 100, 2)
-                pipeline_memory["results"]["score"] = f"{final_score_percentage}%"
-                pipeline_memory["results"]["metric"] = metric
-                print(f"   -> 🎯 MODEL TRAINED! {metric}: {final_score_percentage}%")
-
+        # STEP 3: Execute the graph
+        print("⚙️ Executing Graph via Orchestrator...")
+        final_response = executor.execute_graph(validated_contract.model_dump(), file_path)
+        
+        # STEP 4: Send the master payload back to Next.js
+        print("✅ Pipeline complete! Handing off to Frontend.")
+        return {
+            "dag_structure": validated_contract.model_dump(),
+            "execution_results": final_response
+        }
+        
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        print(f"❌ PIPELINE CRASHED AT {node.action_type}: {str(e)}")
-        return {"status": "error", "message": str(e), "failed_node": step_id}
+        print(f"❌ Core ML Engine Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Engine Failure: {str(e)}")
 
-    print("\n✅ PIPELINE EXECUTION COMPLETE!")
-    print("="*50 + "\n")
+# ==========================================
+# 7. SECURE MODEL DOWNLOAD ENDPOINT
+# ==========================================
+# ==========================================
+# 7. SECURE MODEL DOWNLOAD ENDPOINT
+# ==========================================
+@app.get("/api/download-model")
+async def download_model(current_user_id: str = Depends(verify_token)):
+    # Look for the exact file Bhavya's trainer just saved
+    model_path = os.path.join("data", current_user_id, "trained_model.pkl")
     
-    return {
-        "status": "success", 
-        "message": "Pipeline ran perfectly.",
-        "results": pipeline_memory["results"]
-    }
+    if not os.path.exists(model_path):
+        raise HTTPException(status_code=404, detail="No trained model found. Run the pipeline first!")
+        
+    # Send the file to the browser as a downloadable stream
+    return FileResponse(
+        path=model_path, 
+        filename="ai_pipeline_model.pkl", 
+        media_type='application/octet-stream'
+    )    
