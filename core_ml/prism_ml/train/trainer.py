@@ -4,10 +4,27 @@ from typing import Dict, Any
 from prism_ml.exceptions import TrainingConfigurationError
 import joblib
 import os
+import uuid
 
 class PrismTrainer:
     def __init__(self):
         print("🧠 Prism AutoML Trainer Initialized")
+
+    def _safe_pandas_conversion(self, df: pl.DataFrame):
+        """
+        Helper Method: Safely converts Polars to Pandas.
+        Acts as a translator to downcast futuristic PyArrow strings into 
+        legacy Categories so FLAML/Scikit-Learn doesn't crash.
+        """
+        print("🔄 Translating Polars Data into FLAML-compatible format...")
+        pdf = df.to_pandas()
+        
+        # DOWNCASTING ARMOR: Convert PyArrow Strings & Objects to Legacy Categories
+        for col in pdf.columns:
+            if pdf[col].dtype.name in ['string', 'string[pyarrow]', 'object']:
+                pdf[col] = pdf[col].astype('category')
+                
+        return pdf
 
     # Notice we added raw_data_path here!
     def execute_training(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any], raw_data_path: str):
@@ -37,8 +54,9 @@ class PrismTrainer:
         print(f"🚀 Starting FLAML AutoML. Target: '{target_col}' | Budget: {time_budget}s")
         print(f"🤖 Allowed Models: {estimator_list}")
 
-        # 3. Convert Polars to Pandas (FLAML requirement)
-        pdf = df.to_pandas()
+        # 3. Convert Polars to Pandas (FLAML requirement) via our safe helper method
+        pdf = self._safe_pandas_conversion(df)
+        
         y = pdf[target_col]
         X = pdf.drop(columns=[target_col])
 
@@ -63,9 +81,9 @@ class PrismTrainer:
         # 5. DYNAMIC SAVING (The Magic Fix)
         # This automatically extracts 'backend/app/data/usr_123' from the raw path!
         dataset_directory = os.path.dirname(raw_data_path)
-        save_path = os.path.join(dataset_directory, "trained_model.pkl")
-        
+        run_id = uuid.uuid4().hex[:8]
+        save_path = os.path.join(dataset_directory, f"trained_model_{run_id}.pkl")        
         joblib.dump(automl, save_path)
         print(f"💾 Model securely saved to disk at: {save_path}")
 
-        return automl
+        return automl,save_path

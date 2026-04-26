@@ -1,7 +1,8 @@
 import polars as pl
 from typing import Dict, Any
 from prism_ml.exceptions import DataLoadError, CleaningConfigurationError
-
+import os
+import uuid
 class PrismCleaner:
     def __init__(self):
         print("🔧 Prism Cleaner Initialized")
@@ -30,7 +31,12 @@ class PrismCleaner:
         try:
             cleaned_df = lazy_df.collect(streaming=True)
             print(f"✅ Data cleaning complete. Final shape: {cleaned_df.shape}")
-            return cleaned_df
+            dataset_directory = os.path.dirname(file_path)
+            run_id = uuid.uuid4().hex[:8]
+            save_path = os.path.join(dataset_directory, f"cleaned_dataset_{run_id}.csv")
+            cleaned_df.write_csv(save_path)
+            print(f"💾 Cleaned dataset securely saved to disk at: {save_path}")
+            return cleaned_df,save_path
         except Exception as e:
             raise CleaningConfigurationError(node_id=node_id, message=f"Streaming execution failed: {e}")
 
@@ -47,6 +53,7 @@ class PrismCleaner:
     def _apply_drops(self, lazy_df: pl.LazyFrame, drop_cols: list) -> pl.LazyFrame:
         if drop_cols:
             print(f"🗑️ Plan updated: Drop columns {drop_cols}.")
+            # strict:False is used so that it does not give error if such column does not exist in lazy_df schema
             return lazy_df.drop(drop_cols, strict=False) 
         return lazy_df
 

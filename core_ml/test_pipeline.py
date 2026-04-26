@@ -49,6 +49,6 @@ if __name__ == "__main__":
                     print(f"    📊 [{chart['chart_type'].upper()}] {chart['title']}")
         else:
             print(f"⚠️ Engine Warning: {final_response['message']}")
-
+        print(final_response["results"])
     except Exception as e:
         print(f"\n🚨 TEST CRASHED: {e}")
