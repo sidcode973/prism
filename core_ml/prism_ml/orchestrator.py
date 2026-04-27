@@ -6,6 +6,7 @@ from prism_ml.clean.cleaner import PrismCleaner
 from prism_ml.train.trainer import PrismTrainer
 from prism_ml.exceptions import PrismCoreError, TrainingConfigurationError
 from prism_ml.plot.plotter import PrismPlotter
+import traceback
 class PrismDAGExecutor:
     def __init__(self):
         print("⚙️ Booting Prism DAG Execution Engine...")
@@ -57,15 +58,18 @@ class PrismDAGExecutor:
 
                 if action == "clean_data":
                     # Cleaner takes raw data path, outputs a Polars DF
-                    current_data = self.cleaner.execute_cleaning(node_id, current_data, params)
-                    results["cleaned_data"] = "success"
+                    current_data, saved_path = self.cleaner.execute_cleaning(node_id, current_data, params)
+                    results["cleaned_data_status"] = "success"
+                    # Put the unique path in the payload for Shubhra!
+                    results["cleaned_data_path"] = saved_path
 
                 elif action == "train_model":
-                    # Trainer takes the Polars DF from the previous step
-                    model = self.trainer.execute_training(node_id, current_data, params,raw_data_path)
+                    # Catch the tuple!
+                    model, saved_path = self.trainer.execute_training(node_id, current_data, params, raw_data_path)
                     results["best_model"] = str(model.best_estimator)
                     results["loss"] = model.best_loss
-
+                    # Put the unique path in the payload for Shubhra!
+                    results["trained_model_path"] = saved_path
                 elif action == "generate_plot":
                     # Hand the Polars dataframe to the charting engine
                     plot_data = self.plotter.generate_plot(node_id, current_data, params)
@@ -88,4 +92,8 @@ class PrismDAGExecutor:
             # Deterministic errors (Missing columns, bad math) - Return immediately to user
             return {"status": "error", "error_type": "NodeError", "message": str(e)}
         except Exception as e:
+            print("\n🚨 SYSTEM CRASH INTERCEPTED! Printing full forensic traceback:")
+            traceback.print_exc() 
+            print("--------------------------------------------------\n")
+            
             return {"status": "error", "error_type": "SystemCrash", "message": f"Fatal error: {e}"}

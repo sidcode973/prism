@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Project Prism", // I updated your title!
+  title: "Project Prism", 
   description: "Interactive Machine Learning Pipeline",
 };
 
@@ -31,7 +31,10 @@ export default function RootLayout({
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       >
-        <body className="min-h-full flex flex-col">{children}</body>
+        {/* ---> FIX: Added suppressHydrationWarning to stop Grammarly from crashing React <--- */}
+        <body className="min-h-full flex flex-col" suppressHydrationWarning>
+          {children}
+        </body>
       </html>
     </ClerkProvider>
   );

@@ -6,11 +6,45 @@ from typing import Dict, Any
 from prism_ml.exceptions import TrainingConfigurationError
 import joblib
 import os
+import uuid
+import pandas as pd
 
 class PrismTrainer:
     def __init__(self):
         print("🧠 Prism AutoML Trainer Initialized")
 
+   
+
+   
+
+    def _safe_pandas_conversion(self, df: pl.DataFrame, target_col: str):
+        """
+        Helper Method: Safely converts Polars to Pandas at high speed.
+        Sanitizes column headers and uses vectorized C-level casting for data.
+        """
+        print("🔄 Executing High-Speed Polars-to-Pandas Translation...")
+        
+        # 1. Native Conversion
+        pdf = df.to_pandas()
+        
+        # ---------------------------------------------------------
+        # THE HOLY GRAIL FIX: Sanitize the column headers!
+        # This stops the 'StringDtype' crash inside FLAML's index checker.
+        # ---------------------------------------------------------
+        pdf.columns = pdf.columns.astype('object') 
+        
+        # 2. HIGH-SPEED VECTORIZED ARMOR FOR THE DATA (No .to_list() loops!)
+        for col in pdf.columns:
+            # Catch all variations of strings, objects, and PyArrow types
+            if pd.api.types.is_string_dtype(pdf[col]) or pd.api.types.is_object_dtype(pdf[col]):
+                if col != target_col:
+                    # Instantly cast entire feature column to Category via C-backend
+                    pdf[col] = pdf[col].astype('category')
+                else:
+                    # Target column must be standard Python strings/objects for classification
+                    pdf[col] = pdf[col].astype(str).astype('object')
+                    
+        return pdf
     # Notice we added raw_data_path here!
     def execute_training(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any], raw_data_path: str):
         """
@@ -39,8 +73,9 @@ class PrismTrainer:
         print(f"🚀 Starting FLAML AutoML. Target: '{target_col}' | Budget: {time_budget}s")
         print(f"🤖 Allowed Models: {estimator_list}")
 
-        # 3. Convert Polars to Pandas
-        pdf = df.to_pandas()
+        # 3. Convert Polars to Pandas (FLAML requirement) via our safe helper method
+        pdf = self._safe_pandas_conversion(df,target_col)
+        
         y = pdf[target_col]
         X = pdf.drop(columns=[target_col])
 
@@ -65,9 +100,9 @@ class PrismTrainer:
         # 5. DYNAMIC SAVING (The Magic Fix)
         # This automatically extracts 'backend/app/data/usr_123' from the raw path!
         dataset_directory = os.path.dirname(raw_data_path)
-        save_path = os.path.join(dataset_directory, "trained_model.pkl")
-        
+        run_id = uuid.uuid4().hex[:8]
+        save_path = os.path.join(dataset_directory, f"trained_model_{run_id}.pkl")        
         joblib.dump(automl, save_path)
         print(f"💾 Model securely saved to disk at: {save_path}")
 
-        return automl
+        return automl,save_path

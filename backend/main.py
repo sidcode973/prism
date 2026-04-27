@@ -9,6 +9,7 @@ import shutil
 import jwt
 import json
 import sys
+import glob
 
 # ==========================================
 # 1. BHAVYA'S CORE ML IMPORTS (The Black Box)
@@ -174,13 +175,46 @@ async def run_pipeline(
 # ==========================================
 # 7. SECURE MODEL DOWNLOAD ENDPOINT
 # ==========================================
+# ==========================================
+# 7. SECURE MODEL DOWNLOAD ENDPOINT (Dynamic)
+# ==========================================
 @app.get("/api/download-model")
 async def download_model(current_user_id: str = Depends(verify_token)):
-    model_path = os.path.join("data", current_user_id, "trained_model.pkl")
-    if not os.path.exists(model_path):
+    user_folder = os.path.join("data", current_user_id)
+    
+    # Search the folder for ANY .pkl files
+    model_files = glob.glob(os.path.join(user_folder, "*.pkl"))
+    
+    if not model_files:
         raise HTTPException(status_code=404, detail="No trained model found. Run the pipeline first!")
+        
+    # Grab the most recently created model
+    latest_model_path = max(model_files, key=os.path.getctime)
+    
     return FileResponse(
-        path=model_path, 
-        filename="ai_pipeline_model.pkl", 
+        path=latest_model_path, 
+        filename="prism_ai_model.pkl", 
         media_type='application/octet-stream'
+    )
+
+# ==========================================
+# 8. SECURE CLEAN DATA DOWNLOAD ENDPOINT (Dynamic)
+# ==========================================
+@app.get("/api/download-clean-data")
+async def download_clean_data(current_user_id: str = Depends(verify_token)):
+    user_folder = os.path.join("data", current_user_id)
+    
+    # Search the folder for CSVs that have 'clean' in the name
+    clean_files = glob.glob(os.path.join(user_folder, "*clean*.csv"))
+    
+    if not clean_files:
+        raise HTTPException(status_code=404, detail="No cleaned dataset found.")
+        
+    # Grab the most recently cleaned dataset
+    latest_clean_path = max(clean_files, key=os.path.getctime)
+    
+    return FileResponse(
+        path=latest_clean_path, 
+        filename="prism_cleaned_data.csv", 
+        media_type='text/csv'
     )
