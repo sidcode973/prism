@@ -71,6 +71,13 @@ class PrismDAGExecutor:
                     # Put the unique path in the payload for Shubhra!
                     results["trained_model_path"] = saved_path
                 elif action == "generate_plot":
+                    import polars as pl
+                    
+                    # ---> THE FIX: Auto-load data if the user skipped the Clean step <---
+                    if isinstance(current_data, str):
+                        print("📥 Auto-loading raw data for the Plotter...")
+                        current_data = pl.read_csv(current_data, null_values=["NA", "N/A", "null", "NaN", "?", "", " "])
+
                     # Hand the Polars dataframe to the charting engine
                     plot_data = self.plotter.generate_plot(node_id, current_data, params)
                     
