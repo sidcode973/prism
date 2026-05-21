@@ -12,6 +12,26 @@ class PrismPlotter:
         # Minimum points needed to actually make a meaningful chart
         self.MIN_REQUIRED_ROWS = 2 
 
+    def _extract_column(self, parameters: Dict[str, Any], df: pl.DataFrame, known_keys: list) -> str:
+        """
+        The Ultimate Fallback: 
+        1. Tries to find the column using common AI keys.
+        2. If that fails, it scans ALL parameter values to see if the AI just dumped a valid column name somewhere.
+        """
+        # 1. Try the usual suspects
+        for key in known_keys:
+            val = parameters.get(key)
+            if val and val in df.columns:
+                return val
+        
+        # 2. The Scanner: Did the AI mention a valid column name ANYWHERE in the JSON?
+        for key, val in parameters.items():
+            if isinstance(val, str) and val in df.columns:
+                print(f"🕵️‍♂️ AI Scanner found valid column '{val}' hiding inside key '{key}'!")
+                return val
+                
+        return None
+
     def generate_plot(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Routes the request to the correct charting engine.
@@ -41,13 +61,17 @@ class PrismPlotter:
     # ==========================================
 
     def _build_scatter(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        x_col = parameters.get("x_col")
-        y_col = parameters.get("y_col")
+        x_col = self._extract_column(parameters, df, ["x_col", "x", "x_axis"])
+        y_col = self._extract_column(parameters, df, ["y_col", "y", "y_axis"])
+
+        # If it still couldn't find them, scan for any two valid columns
+        if not x_col or not y_col:
+            valid_cols = [v for v in parameters.values() if isinstance(v, str) and v in df.columns]
+            if not x_col and len(valid_cols) > 0: x_col = valid_cols[0]
+            if not y_col and len(valid_cols) > 1: y_col = valid_cols[1]
 
         if not x_col or not y_col:
-            raise PlottingConfigurationError(node_id, "Scatter plots require 'x_col' and 'y_col'.")
-        if x_col not in df.columns or y_col not in df.columns:
-            raise PlottingConfigurationError(node_id, f"Columns '{x_col}' or '{y_col}' not found.")
+            raise PlottingConfigurationError(node_id, f"Scatter plots require 2 valid columns. AI provided: {parameters}")
 
         plot_df = df.drop_nulls(subset=[x_col, y_col])
         if plot_df.height < self.MIN_REQUIRED_ROWS:
@@ -71,10 +95,10 @@ class PrismPlotter:
         }
 
     def _build_bar(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        category_col = parameters.get("category_col")
+        category_col = self._extract_column(parameters, df, ["category_col", "x_col", "category", "column_name", "column"])
         
-        if not category_col or category_col not in df.columns:
-             raise PlottingConfigurationError(node_id, "Bar charts require a valid 'category_col'.")
+        if not category_col:
+             raise PlottingConfigurationError(node_id, f"Bar charts require a valid category column. AI provided: {parameters}")
 
         plot_df = df.drop_nulls(subset=[category_col])
         if plot_df.height == 0:
@@ -96,9 +120,10 @@ class PrismPlotter:
         }
 
     def _build_histogram(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        target_col = parameters.get("target_col")
-        if not target_col or target_col not in df.columns:
-             raise PlottingConfigurationError(node_id, "Histograms require a valid 'target_col'.")
+        target_col = self._extract_column(parameters, df, ["target_col", "x_col", "column_name", "column"])
+        
+        if not target_col:
+             raise PlottingConfigurationError(node_id, f"Histograms require a valid target column. AI provided: {parameters}")
 
         plot_df = df.drop_nulls(subset=[target_col])
         if plot_df.height < self.MIN_REQUIRED_ROWS:
@@ -120,9 +145,10 @@ class PrismPlotter:
         }
 
     def _build_boxplot(self, node_id: str, df: pl.DataFrame, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        target_col = parameters.get("target_col")
-        if not target_col or target_col not in df.columns:
-             raise PlottingConfigurationError(node_id, "Boxplots require a 'target_col'.")
+        target_col = self._extract_column(parameters, df, ["target_col", "y_col", "column_name", "column"])
+        
+        if not target_col:
+             raise PlottingConfigurationError(node_id, f"Boxplots require a valid target column. AI provided: {parameters}")
 
         plot_df = df.drop_nulls(subset=[target_col])
         if plot_df.height < 5:
