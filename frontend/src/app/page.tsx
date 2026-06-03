@@ -2,8 +2,8 @@
 
 import React, { useState } from "react";
 import { 
-  Menu, X, Play, FolderKanban, Settings, Database, 
-  Home, Phone, Info, LogIn, Sparkles, BarChart3, BrainCircuit,
+  Menu, X, Play, FolderKanban, Settings, 
+  Home, Phone, Info, LogIn, Sparkles, BrainCircuit,
   LogOut, UserPlus
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -12,7 +12,7 @@ import { useUser, useClerk } from "@clerk/nextjs";
 // ==========================================
 // 1. REUSABLE SIDEBAR COMPONENT
 // ==========================================
-function Sidebar({ isSignedIn, onCanvasClick, onDatasetsClick }: { isSignedIn: boolean, onCanvasClick: () => void, onDatasetsClick: () => void }) {
+function Sidebar({ isSignedIn, onCanvasClick }: { isSignedIn: boolean, onCanvasClick: () => void }) {
   const [isOpen, setIsOpen] = useState(false);
   const router = useRouter();
   const { signOut } = useClerk();
@@ -62,8 +62,6 @@ function Sidebar({ isSignedIn, onCanvasClick, onDatasetsClick }: { isSignedIn: b
         <div className="flex-1 flex flex-col gap-4 p-4 text-black overflow-hidden">
           <SidebarItem icon={<Home className="shrink-0" />} label="Home Dashboard" isOpen={isOpen} />
           <SidebarItem icon={<FolderKanban className="shrink-0" />} label="Pipeline Canvas" isOpen={isOpen} onClick={onCanvasClick} />
-          {/* ---> NEW: Connected Datasets Routing <--- */}
-          <SidebarItem icon={<Database className="shrink-0" />} label="Datasets" isOpen={isOpen} onClick={onDatasetsClick} />
           <SidebarItem icon={<Settings className="shrink-0" />} label="Settings" isOpen={isOpen} />
         </div>
 
@@ -198,7 +196,6 @@ function TrainCard({ onClick }: { onClick: () => void }) {
 // ==========================================
 export default function HomePage() {
   const router = useRouter();
-  
   const { isSignedIn, isLoaded } = useUser();
 
   // Route to canvas
@@ -207,15 +204,6 @@ export default function HomePage() {
       router.push("/sign-in");
     } else {
       router.push("/canvas");
-    }
-  };
-
-  // ---> NEW: Route to datasets
-  const handleDatasetsClick = () => {
-    if (!isSignedIn) {
-      router.push("/sign-in");
-    } else {
-      router.push("/datasets");
     }
   };
 
@@ -230,7 +218,6 @@ export default function HomePage() {
       <Sidebar 
         isSignedIn={!!isSignedIn} 
         onCanvasClick={handleRestrictedAction}
-        onDatasetsClick={handleDatasetsClick} 
       />
 
       {/* 2. Main Dashboard Content */}
