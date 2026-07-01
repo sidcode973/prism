@@ -89,6 +89,47 @@ class PrismTrainer:
             "log_file_name": 'prism_training.log',
             "verbose": 0 
         }
+        # ==========================================
+        # AI TRANSLATOR FIX: Catch Hallucinated Model Names
+        # ==========================================
+        # If Llama 3 tries to force specific models, we need to translate them 
+        # to FLAML's strict internal naming, or just let FLAML decide!
+        
+        # A map of common AI hallucinations to FLAML strict keys
+        FLAML_MAP = {
+            "random_forest": "rf",
+            "randomforest": "rf",
+            "xg_boost": "xgboost",
+            "lightgbm": "lgbm",
+            "gradient_boosting": "lgbm",
+            "logistic_regression": "lrl1",
+            "linear_regression": "lrl1",
+            "svm": "svc",
+            "support_vector_machine": "svc"
+        }
+
+        if 'estimator_list' in automl_settings:
+            raw_list = automl_settings['estimator_list']
+            # If it's a string, make it a list
+            if isinstance(raw_list, str):
+                raw_list = [raw_list]
+                
+            clean_list = []
+            for est in raw_list:
+                est_clean = est.lower().strip()
+                # Translate it if it's in our map, otherwise assume Llama got it right
+                clean_list.append(FLAML_MAP.get(est_clean, est_clean))
+            
+            # Double check against FLAML's actual allowed list just to be safe
+            allowed_flaml = ['xgboost', 'xgb_limitdepth', 'rf', 'lgbm', 'lrl1', 'lrl2', 'catboost', 'extra_tree', 'kneighbor']
+            final_list = [e for e in clean_list if e in allowed_flaml]
+            
+            if final_list:
+                automl_settings['estimator_list'] = final_list
+            else:
+                # If Llama gave us total garbage, delete the restriction and let FLAML test everything!
+                del automl_settings['estimator_list']
+        # ==========================================
 
         # Train the model!
         automl.fit(X_train=X, y_train=y, **automl_settings)

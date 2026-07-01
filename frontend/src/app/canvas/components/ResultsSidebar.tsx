@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import ReactECharts from 'echarts-for-react';
-import { X, Trophy, FileText, BrainCircuit } from "lucide-react";
+import { X, Trophy, FileText, BrainCircuit, Loader2 } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
 
 interface ResultsSidebarProps {
@@ -14,6 +14,20 @@ interface ResultsSidebarProps {
 export default function ResultsSidebar({ isOpen, onClose, pipelineResult }: ResultsSidebarProps) {
   const { getToken } = useAuth();
   const [currentChartIndex, setCurrentChartIndex] = useState<number>(0);
+  
+  // ---> NEW STATE FOR THE DELAY PATCH <---
+  const [renderChart, setRenderChart] = useState<boolean>(false);
+
+  // ---> NEW TIMER LOGIC <---
+  useEffect(() => {
+    if (isOpen) {
+      setRenderChart(false);
+      const timer = setTimeout(() => setRenderChart(true), 350); // Wait for the drawer animation
+      return () => clearTimeout(timer);
+    } else {
+      setRenderChart(false);
+    }
+  }, [isOpen]);
 
   if (!pipelineResult) return null;
 
@@ -83,7 +97,6 @@ export default function ResultsSidebar({ isOpen, onClose, pipelineResult }: Resu
       </div>
 
       <div className="flex-1 relative min-h-0 w-full">
-        {/* pb-24 ensures the close button is never hidden at the bottom */}
         <div className="absolute inset-0 overflow-y-auto px-8 pb-24 pt-4 custom-scrollbar flex flex-col">
           
           <div className="mx-auto w-16 h-16 bg-yellow-300 border-4 border-black rounded-full flex items-center justify-center mb-4 shadow-[4px_4px_0px_#000] shrink-0">
@@ -124,9 +137,18 @@ export default function ResultsSidebar({ isOpen, onClose, pipelineResult }: Resu
                 )}
               </div>
               
+              {/* ---> THE CHART RENDER FIX <--- */}
               <div style={{ height: '400px', width: '100%' }}>
-                 <ReactECharts option={getEChartsOption()} style={{ height: '100%', width: '100%' }} notMerge={true} />
+                {renderChart ? (
+                   <ReactECharts option={getEChartsOption()} style={{ height: '100%', width: '100%' }} notMerge={true} />
+                ) : (
+                   <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 font-bold animate-pulse border-2 border-dashed border-gray-300 rounded-xl">
+                     <Loader2 size={32} className="animate-spin mb-2" />
+                     Painting Chart...
+                   </div>
+                )}
               </div>
+
             </div>
           )}
 
