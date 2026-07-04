@@ -68,6 +68,7 @@ export default function UploadModal({ isOpen, onClose, onSuccess }: UploadModalP
 <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 font-sans text-black">
 <div className="w-full max-w-4xl bg-blue-200 border-8 border-black shadow-[12px_12px_0px_#000] p-8 rounded-3xl relative animate-in zoom-in-95 duration-200">        
         <button 
+        type="button"
           onClick={() => { onClose(); setUploadStatus("idle"); setUploadFile(null); }} 
           className="absolute top-4 right-4 p-2 bg-white hover:bg-red-200 border-4 border-black rounded-xl transition-all shadow-[4px_4px_0px_#000] active:translate-y-1 active:translate-x-1 active:shadow-none"
         >
@@ -91,6 +92,7 @@ export default function UploadModal({ isOpen, onClose, onSuccess }: UploadModalP
         </div>
 
         <button 
+        type="button"
           onClick={handleUploadSubmit}
           disabled={!uploadFile || uploadStatus === "uploading"}
           className="mt-6 w-full bg-black text-white border-4 border-black hover:bg-gray-800 active:translate-x-1 active:translate-y-1 active:shadow-none shadow-[6px_6px_0px_#ccc] py-3 font-black text-xl rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed uppercase flex justify-center items-center gap-2"

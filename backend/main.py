@@ -12,7 +12,7 @@ import sys
 import glob
 
 # ==========================================
-# 1. BHAVYA'S CORE ML IMPORTS (The Black Box)
+# 1. PRISM CORE ML IMPORTS (The Black Box)
 # ==========================================
 core_ml_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core_ml"))
 sys.path.append(core_ml_dir)
@@ -47,7 +47,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
         raise HTTPException(status_code=401, detail=f"Token error: {str(e)}")
 
 # ==========================================
-# 3. THE PYDANTIC SHIELD (Contract Schema)
+# 3. THE PYDANTIC SHIELD (Updated for 3-Node System)
 # ==========================================
 class PipelineNode(BaseModel):
     node_id: str
@@ -69,6 +69,12 @@ class DAGContract(BaseModel):
     dataset: DatasetInfo
     nodes: List[PipelineNode]
     execution_order: List[str]
+
+# ---> NEW: The Abort Switch Shield <---
+class LLMResponse(BaseModel):
+    status: str
+    rejection_reason: Optional[str] = None
+    pipeline: Optional[DAGContract] = None
 
 # ==========================================
 # 4. INITIALIZE THE ML ENGINE
@@ -123,22 +129,19 @@ async def run_pipeline(
     # ==========================================
     # ---> THE BACKEND FIX: PROMPT AUGMENTATION <---
     # ==========================================
-    # We secretly inject strict instructions into the user's prompt 
-    # to force Llama 3 to format the train_model node correctly.
     backend_enforced_prompt = prompt + """
     
     [URGENT SYSTEM OVERRIDE RULES]:
-    1. If the user asks to train or predict, you MUST add a 'train_model' node.
-    2. Inside the 'train_model' parameters, you MUST include 'target_column' with the exact name of the column to predict.
-    3. DO NOT invent a 'split_data' node. Your action_type must strictly be one of: load_dataset, clean_data, train_model, or generate_plot.
+    1. Your action_type MUST strictly be one of: fix_csv, clean_data, feature_engineer, generate_plot, train_model.
+    2. If the user asks to train a model, you MUST inject 'feature_engineer' before 'train_model'.
+    3. Inside the 'train_model' and 'feature_engineer' parameters, you MUST include 'target_column' with the exact name of the column to predict.
     """
 
     try:
-        print("🔍 Profiling data using Bhavya's Engine...")
+        print("🔍 Profiling data using Profiler Engine...")
         profile = profiler.generate_profile(file_path)
         
         print("🧠 Asking Llama 3 to generate DAG Contract...")
-        # We pass the ENFORCED prompt instead of the raw user prompt
         contract_str = agent.generate_contract(
             user_prompt=backend_enforced_prompt, 
             user_id=current_user_id, 
@@ -150,19 +153,31 @@ async def run_pipeline(
         try:
             clean_str = contract_str.replace("```json", "").replace("```", "").strip()
             raw_json = json.loads(clean_str)
-            validated_contract = DAGContract(**raw_json)
+            validated_response = LLMResponse(**raw_json)
             print("🛡️ AI Contract passed Pydantic validation!")
         except json.JSONDecodeError:
             raise HTTPException(status_code=502, detail="Llama 3 returned invalid JSON format.")
         except ValidationError as ve:
             raise HTTPException(status_code=502, detail=f"Llama 3 missed required fields: {ve.errors()}")
 
+        # ---> NEW: ABORT SWITCH LOGIC <---
+        if validated_response.status == "error":
+            print(f"🛑 LLM ABORTED PIPELINE: {validated_response.rejection_reason}")
+            # We return early to the frontend with the LLM's custom error message!
+            return {
+                "dag_structure": None,
+                "execution_results": {
+                    "status": "warning", 
+                    "message": validated_response.rejection_reason
+                }
+            }
+
         print("⚙️ Executing Graph via Orchestrator...")
-        final_response = executor.execute_graph(validated_contract.model_dump(), file_path)
+        final_response = executor.execute_graph(validated_response.pipeline.model_dump(), file_path)
         
         print("✅ Pipeline complete! Handing off to Frontend.")
         return {
-            "dag_structure": validated_contract.model_dump(),
+            "dag_structure": validated_response.pipeline.model_dump(),
             "execution_results": final_response
         }
         
@@ -173,22 +188,17 @@ async def run_pipeline(
         raise HTTPException(status_code=500, detail=f"Engine Failure: {str(e)}")
 
 # ==========================================
-# 7. SECURE MODEL DOWNLOAD ENDPOINT
-# ==========================================
-# ==========================================
 # 7. SECURE MODEL DOWNLOAD ENDPOINT (Dynamic)
 # ==========================================
 @app.get("/api/download-model")
 async def download_model(current_user_id: str = Depends(verify_token)):
     user_folder = os.path.join("data", current_user_id)
     
-    # Search the folder for ANY .pkl files
     model_files = glob.glob(os.path.join(user_folder, "*.pkl"))
     
     if not model_files:
         raise HTTPException(status_code=404, detail="No trained model found. Run the pipeline first!")
         
-    # Grab the most recently created model
     latest_model_path = max(model_files, key=os.path.getctime)
     
     return FileResponse(
@@ -200,21 +210,25 @@ async def download_model(current_user_id: str = Depends(verify_token)):
 # ==========================================
 # 8. SECURE CLEAN DATA DOWNLOAD ENDPOINT (Dynamic)
 # ==========================================
+# ==========================================
+# 8. SECURE DATA DOWNLOAD ENDPOINT (Dynamic)
+# ==========================================
 @app.get("/api/download-clean-data")
 async def download_clean_data(current_user_id: str = Depends(verify_token)):
     user_folder = os.path.join("data", current_user_id)
     
-    # Search the folder for CSVs that have 'clean' in the name
-    clean_files = glob.glob(os.path.join(user_folder, "*clean*.csv"))
+    # Grab ALL csv files except the original raw uploaded ones (which usually don't have these prefixes)
+    all_csvs = glob.glob(os.path.join(user_folder, "*.csv"))
+    generated_files = [f for f in all_csvs if "clean" in f or "fixed" in f or "engineered" in f]
     
-    if not clean_files:
-        raise HTTPException(status_code=404, detail="No cleaned dataset found.")
+    if not generated_files:
+        raise HTTPException(status_code=404, detail="No processed dataset found.")
         
-    # Grab the most recently cleaned dataset
-    latest_clean_path = max(clean_files, key=os.path.getctime)
+    # Grab the absolute newest file generated by the pipeline
+    latest_path = max(generated_files, key=os.path.getctime)
     
     return FileResponse(
-        path=latest_clean_path, 
-        filename="prism_cleaned_data.csv", 
+        path=latest_path, 
+        filename="prism_processed_data.csv", 
         media_type='text/csv'
     )
