@@ -32,3 +32,6 @@ Thumbs.db
 # 3. GLOBAL NODE (Safety catch)
 # =========================
 node_modules/
+data
+structure.txt
+.clerk
