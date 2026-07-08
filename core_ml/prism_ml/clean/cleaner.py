@@ -90,8 +90,9 @@ class PrismCleaner:
             col0 = df.columns[0]
             col1 = df.columns[1]
             
-            # Mask to find rows where Column 1 equals Column 2 and is not empty
-            mask = (df[col0] == df[col1]) & (df[col0].is_not_null()) & (df[col0].str.strip_chars() != "")
+            # THE CRITICAL FIX: Cast col0 to String safely using .cast(pl.String) 
+            # so string operations (.str) don't crash when the ID column is numeric (i64)!
+            mask = (df[col0] == df[col1]) & (df[col0].is_not_null()) & (df[col0].cast(pl.String).str.strip_chars() != "")
             
             shifted_count = mask.sum()
             if shifted_count > 0:
