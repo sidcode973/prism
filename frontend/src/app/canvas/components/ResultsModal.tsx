@@ -1,24 +1,21 @@
 import React, { useState } from 'react';
 import { X, Download, ChevronLeft, ChevronRight, BarChart3, Database, BrainCircuit } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
-import { useAuth } from "@clerk/nextjs"; // <-- 1. Import Clerk Auth
+import { useAuth } from "@clerk/nextjs"; 
 
 export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   const [chartIndex, setChartIndex] = useState(0);
-  const { getToken } = useAuth(); // <-- 2. Get the token fetcher
+  const { getToken } = useAuth(); 
 
   if (!isOpen || !pipelineResult) return null;
 
   const charts = pipelineResult.charts || [];
   const currentChart = charts[chartIndex];
 
-  // ---> THE FIX: Secure Blob Download <---
-  // ---> THE FIX: Secure Blob Download (Data) <---
   const handleDownloadData = async () => {
     try {
       const token = await getToken();
       
-      // FIX 1: Add a cache-buster (?t=...) so the browser doesn't block repeated clicks
       const response = await fetch(`http://localhost:8000/api/download-clean-data?t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -33,7 +30,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
       document.body.appendChild(a);
       a.click();
       
-      // FIX 2: Give the browser 1 second to start the download before destroying the link
       setTimeout(() => {
         window.URL.revokeObjectURL(url);
         a.remove();
@@ -45,12 +41,10 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     }
   };
   
-  // ---> THE FIX: Secure Blob Download (Model) <---
   const handleDownloadModel = async () => {
     try {
       const token = await getToken();
       
-      // FIX 1: Add cache-buster
       const response = await fetch(`http://localhost:8000/api/download-model?t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -65,7 +59,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
       document.body.appendChild(a);
       a.click();
       
-      // FIX 2: Give the browser 1 second to start the download
       setTimeout(() => {
         window.URL.revokeObjectURL(url);
         a.remove();

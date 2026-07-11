@@ -1,10 +1,11 @@
 import time
+import os
 from typing import Dict, Any
 import traceback
 import polars as pl
+import s3fs
 
 from prism_ml.agent.router import PrismRouterAgent
-# ---> NEW IMPORTS FOR THE 3-NODE SYSTEM <---
 from prism_ml.fix.fixer import PrismFixer
 from prism_ml.clean.cleaner import PrismCleaner
 from prism_ml.feature.engineer import PrismEngineer
@@ -20,6 +21,38 @@ class PrismDAGExecutor:
         self.engineer = PrismEngineer()
         self.trainer = PrismTrainer()
         self.plotter = PrismPlotter() 
+        
+        # Cloud Authentication Credentials for Fallback Loading
+        self.s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
+        self.s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
+        self.s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
+
+    def _safe_cloud_read(self, file_path: str) -> pl.DataFrame:
+        """
+        Unified I/O handler. If nodes skip the Cleaner/Engineer, the Orchestrator 
+        can safely fetch the cloud data itself.
+        """
+        is_s3 = file_path.startswith("s3://")
+        read_kwargs = {
+            "separator": ",",
+            "null_values": ["NA", "N/A", "null", "NaN", "?", "", " ", "-", "unknown", "Unknown"],
+            "ignore_errors": True,
+            "truncate_ragged_lines": True,
+            "quote_char": None  # <--- THE MISSING MAGIC SHIELD
+        }
+        
+        if is_s3:
+            # THE FIX: Decapitate Polars' S3 engine and read bytes natively
+            fs = s3fs.S3FileSystem(
+                client_kwargs={'endpoint_url': self.s3_endpoint},
+                key=self.s3_key,
+                secret=self.s3_secret
+            )
+            with fs.open(file_path, 'rb') as f:
+                file_bytes = f.read()
+            return pl.read_csv(file_bytes, **read_kwargs)
+        else:
+            return pl.read_csv(file_path, **read_kwargs)
 
     def pre_flight_check(self, nodes: Dict[str, Any], execution_order: list):
         """Scans the graph for fatal user errors BEFORE we spend compute power."""
@@ -57,7 +90,7 @@ class PrismDAGExecutor:
         try:
             self.pre_flight_check(nodes, execution_order)
         except PrismCoreError as e:
-             return {"status": "warning", "message": str(e)}
+            return {"status": "warning", "message": str(e)}
 
         # 2. The Relay Race States
         current_path = raw_data_path  # Always points to the most recently saved file
@@ -73,7 +106,6 @@ class PrismDAGExecutor:
                 print(f"▶️ Executing Node: {node_id} ({action})")
 
                 if action == "fix_csv":
-                    # Fixer ONLY handles files, not DataFrames
                     current_path = self.fixer.execute_fix(node_id, current_path, params)
                     current_df = None # Invalidate the DF since the file just changed
                     results["fixed_data_path"] = current_path
@@ -81,7 +113,7 @@ class PrismDAGExecutor:
                 elif action == "clean_data":
                     current_df, current_path = self.cleaner.execute_cleaning(node_id, current_path, params)
                     results["cleaned_data_status"] = "success"
-                    results["cleaned_data_path"] = current_path # For Shubhra!
+                    results["cleaned_data_path"] = current_path
 
                 elif action == "feature_engineer":
                     current_df, current_path = self.engineer.execute_engineering(node_id, current_path, params)
@@ -89,24 +121,23 @@ class PrismDAGExecutor:
                     results["engineered_data_path"] = current_path
 
                 elif action == "train_model":
-                    # Ensure we have a DF loaded
                     if current_df is None:
-                        current_df = pl.read_csv(current_path, null_values=["NA", "N/A", "null", "NaN", "?", "", " "], ignore_errors=True)
+                        # THE FIX: Safely route through the new unified Cloud I/O method
+                        current_df = self._safe_cloud_read(current_path)
                         
                     model, saved_path = self.trainer.execute_training(node_id, current_df, params, raw_data_path)
                     results["best_model"] = str(model.best_estimator)
                     results["loss"] = model.best_loss
-                    results["trained_model_path"] = saved_path # For Shubhra!
+                    results["trained_model_path"] = saved_path
 
                 elif action == "generate_plot":
-                    # Auto-load data if the user skipped Clean/Engineer steps
                     if current_df is None:
                         print("📥 Auto-loading raw data for the Plotter...")
-                        current_df = pl.read_csv(current_path, null_values=["NA", "N/A", "null", "NaN", "?", "", " "], ignore_errors=True)
+                        # THE FIX: Safely route through the new unified Cloud I/O method
+                        current_df = self._safe_cloud_read(current_path)
 
                     plot_data = self.plotter.generate_plot(node_id, current_df, params)
                     
-                    # Store multiple charts in an array for Bhavya Shah's frontend
                     if "charts" not in results:
                         results["charts"] = []
                     results["charts"].append(plot_data)

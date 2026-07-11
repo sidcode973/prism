@@ -75,16 +75,18 @@ class RouterResponse(BaseModel):
     pipeline: Optional[PipelineContract] = None
 
 # ==========================================
-# 2. THE GROQ AGENT CLASS
+# 2. THE AGENT CLASS
 # ==========================================
-
 
 class PrismRouterAgent:
     def __init__(self):
+        # NOTE: If using an actual OpenAI model, ensure you are hitting the right Base URL 
+        # or switch to the official OpenAI Python SDK.
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.model = "openai/gpt-oss-120b" # Or whichever model you are testing
+        self.model = "openai/gpt-oss-120b" 
 
     def generate_contract(self, user_prompt: str, user_id: str, project_id: str, file_name: str, data_profile: str) -> str:
+        # THE FIX: Syncing the bucket name to 'prism-datasets'
         system_prompt = f"""
         You are the Master Data Engineering Agent for Project Prism. Your job is to translate user requests into a strict JSON pipeline contract OR reject illogical requests.
         
@@ -108,7 +110,7 @@ class PrismRouterAgent:
              "drop_columns": [] 
              "impute_rules": {{"ColName": "median"|"mean"|"mode"|"constant_unknown"|"skip"}}
 
-        3. "feature_engineer": Use ONLY to mathematically prep data for ML Algorithms. DO NOT USE FOR PLOTTING.
+        3. "feature_engineer": Use ONLY to mathematically prep data for ML Algorithms. DO NOT USE FOR PLOTTING. DO NOT PASS DATE RELATED COLUMNS TO THIS NODE!
            - Params:
              "target_column": "ColumnName" 
              "scale_method": "standard" or "minmax" or "none"
@@ -136,7 +138,7 @@ class PrismRouterAgent:
             "rejection_reason": null,
             "pipeline": {{
                 "metadata": {{"user_id": "{user_id}", "project_id": "{project_id}"}},
-                "dataset": {{"file_name": "{file_name}", "minio_path": "s3://prism-data/{user_id}/{file_name}"}},
+                "dataset": {{"file_name": "{file_name}", "minio_path": "s3://prism-datasets/{user_id}/{file_name}"}},
                 "nodes": [
                     {{"node_id": "fix_1", "action_type": "fix_csv", "parameters": {{"run_structural_repair": true}}}},
                     {{"node_id": "clean_1", "action_type": "clean_data", "parameters": {{"auto_purge": true, "coerce_types": true, "remove_duplicates": true, "drop_columns": [], "impute_rules": {{}}}}}},
@@ -163,15 +165,14 @@ class PrismRouterAgent:
 
                 # ==========================================
                 # THE BULLETPROOF INJECTION SHIELD
-                # We do not trust the LLM to remember these exact strings. 
-                # We forcibly overwrite them before Pydantic sees them.
                 # ==========================================
                 if parsed_data.get("status") == "success" and parsed_data.get("pipeline"):
                     if "dataset" not in parsed_data["pipeline"]:
                         parsed_data["pipeline"]["dataset"] = {}
                     
                     parsed_data["pipeline"]["dataset"]["file_name"] = file_name
-                    parsed_data["pipeline"]["dataset"]["minio_path"] = f"s3://prism-data/{user_id}/{file_name}"
+                    # THE FIX: Syncing the bucket name to 'prism-datasets'
+                    parsed_data["pipeline"]["dataset"]["minio_path"] = f"s3://prism-datasets/{user_id}/{file_name}"
                     
                     if "metadata" not in parsed_data["pipeline"]:
                         parsed_data["pipeline"]["metadata"] = {}
@@ -191,7 +192,7 @@ class PrismRouterAgent:
                 time.sleep(2)
                 
             except Exception as e:
-                print(f"⚠️ Attempt {attempt + 1}: Groq API error. Retrying...")
+                print(f"⚠️ Attempt {attempt + 1}: API error. Retrying...")
                 if attempt == 2:
-                    raise ConnectionError(f"Groq API failed after 3 retries: {e}")
+                    raise ConnectionError(f"API failed after 3 retries: {e}")
                 time.sleep(2)

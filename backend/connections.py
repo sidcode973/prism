@@ -9,6 +9,8 @@ from minio import Minio
 # ==========================================
 # Inside connections.py
 # Inside connections.py
+from dotenv import load_dotenv
+load_dotenv()
 SQLALCHEMY_DATABASE_URL = os.getenv(
     "DATABASE_URL", 
     "postgresql://prismadmin:prismpassword@127.0.0.1:5432/prismdb" 

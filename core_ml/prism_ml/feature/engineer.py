@@ -2,25 +2,68 @@ import polars as pl
 from typing import Dict, Any
 import os
 import uuid
+import s3fs
+import re
 
 class PrismEngineer:
     def __init__(self):
         print("🔬 Prism Feature Engineer Initialized")
+        
+        # Cloud Authentication Credentials
+        self.s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
+        self.s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
+        self.s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
+        
+        self.storage_options = {
+            "aws_endpoint_url": self.s3_endpoint,
+            "aws_access_key_id": self.s3_key,
+            "aws_secret_access_key": self.s3_secret,
+            "aws_region": "us-east-1",
+            "aws_allow_http": "true" 
+        }
+
+    def _get_filesystem(self, is_s3: bool):
+        """Returns the appropriate filesystem client for writing."""
+        if is_s3:
+            return s3fs.S3FileSystem(
+                client_kwargs={'endpoint_url': self.s3_endpoint},
+                key=self.s3_key,
+                secret=self.s3_secret
+            )
+        return None
 
     def execute_engineering(self, node_id: str, file_path: str, parameters: Dict[str, Any]) -> tuple[pl.DataFrame, str]:
-        print(f"📥 Loading clean dataset for feature engineering from: {file_path}")
+        print(f"📥 Loading dataset for feature engineering from: {file_path}")
+        
+        is_s3 = file_path.startswith("s3://")
         
         try:
-            df = pl.read_csv(file_path, ignore_errors=True)
+            # THE FIX: I/O Abstraction for Reading
+            read_kwargs = {"ignore_errors": True}
+            
+            # Decapitate Polars' S3 engine. Read bytes natively via s3fs.
+            if is_s3:
+                fs = self._get_filesystem(is_s3=True)
+                with fs.open(file_path, 'rb') as f:
+                    file_bytes = f.read()
+                df = pl.read_csv(file_bytes, **read_kwargs)
+            else:
+                df = pl.read_csv(file_path, **read_kwargs)
+                
         except Exception as e:
             raise ValueError(f"Feature Engineering failed to load file {file_path}: {str(e)}")
 
         if not parameters:
             raise ValueError(f"Node {node_id}: Parameters cannot be empty.")
 
+        # THE FIX: Safely extract the exact target column, ignoring LLM hallucinated spaces
         target_col = parameters.get("target_column")
         if target_col:
-            target_col = target_col.strip().replace(" ", "_").lower()
+            target_col = target_col.strip()
+            for col in df.columns:
+                if col.strip().lower() == target_col.lower():
+                    target_col = col
+                    break
 
         # 1. ENCODE CATEGORICALS (One-Hot Encoding)
         if parameters.get("encode_categoricals", True):
@@ -38,22 +81,38 @@ class PrismEngineer:
         try:
             engineered_df = lazy_df.collect(streaming=True)
             
+            # THE PROFESSIONAL APPROACH: Data Schema Governance
+            # Clean all column names to be strictly alphanumeric + underscores to prevent ML engine crashes
+            safe_columns = [re.sub(r'[^a-zA-Z0-9_]', '_', col) for col in engineered_df.columns]
+            engineered_df = engineered_df.rename(dict(zip(engineered_df.columns, safe_columns)))
+            
             print(f"✅ Feature Engineering complete. Final ML Matrix shape: {engineered_df.shape}")
             
-            # Save the final mathematical matrix
-            dataset_directory = os.path.dirname(file_path)
+            # THE FIX: I/O Abstraction for Writing
             run_id = uuid.uuid4().hex[:8]
-            save_path = os.path.join(dataset_directory, f"engineered_dataset_{run_id}.csv")
-            engineered_df.write_csv(save_path)
             
-            print(f"💾 ML-ready matrix saved to disk at: {save_path}")
+            if is_s3:
+                # Safe cloud path construction
+                directory = "/".join(file_path.split("/")[:-1])
+                save_path = f"{directory}/engineered_dataset_{run_id}.csv"
+                
+                fs = self._get_filesystem(is_s3=True)
+                with fs.open(save_path, 'wb') as f:
+                    engineered_df.write_csv(f)
+            else:
+                # Standard local path fallback
+                dataset_directory = os.path.dirname(file_path)
+                save_path = os.path.join(dataset_directory, f"engineered_dataset_{run_id}.csv")
+                engineered_df.write_csv(save_path)
+            
+            print(f"💾 ML-ready matrix safely handed off to disk/cloud at: {save_path}")
             return engineered_df, save_path
             
         except Exception as e:
             raise ValueError(f"Node {node_id}: Engineering execution failed: {e}")
 
     # ==========================================
-    # MATHEMATICAL TRANSFORMERS
+    # MATHEMATICAL TRANSFORMERS (Untouched)
     # ==========================================
 
     def _apply_one_hot_encoding(self, df: pl.DataFrame, target_col: str) -> pl.DataFrame:

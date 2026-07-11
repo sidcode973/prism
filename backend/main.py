@@ -144,14 +144,9 @@ async def upload_dataset(
         )
         print(f"☁️ Saved securely to MinIO Cloud: {minio_path}")
 
-        # 4. Save Locally for the ML Engine to access quickly
-        user_folder = os.path.join("data", current_user_id)
-        os.makedirs(user_folder, exist_ok=True)
-        file_path = os.path.join(user_folder, file.filename)
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_bytes)
+        # ---> THE FIX: LOCAL SAVING LOGIC DELETED HERE <---
 
-        # 5. Track it in the PostgreSQL Database
+        # 4. Track it in the PostgreSQL Database
         new_dataset = DatasetMetadata(
             user_id=current_user_id,
             file_name=file.filename,
@@ -183,9 +178,17 @@ async def run_pipeline(
     print(f"🚀 PROMPT: '{prompt}' ON FILE: {file_name}")
     print("="*50)
 
-    file_path = os.path.join("data", current_user_id, file_name)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Dataset not found locally. Ensure it was uploaded.")
+    # ---> THE FIX: Construct the S3 path instead of local OS path <---
+    file_path = f"s3://{BUCKET_NAME}/{current_user_id}/{file_name}"
+    
+    # ---> THE FIX: Query DB to check if file exists instead of checking local disk <---
+    dataset_record = db.query(DatasetMetadata).filter(
+        DatasetMetadata.user_id == current_user_id, 
+        DatasetMetadata.file_name == file_name
+    ).first()
+    
+    if not dataset_record:
+        raise HTTPException(status_code=404, detail="Dataset not found in Cloud Storage. Ensure it was uploaded.")
 
     # Bhavya's excellent new ML nodes are secured right here
     backend_enforced_prompt = prompt + """
@@ -194,10 +197,11 @@ async def run_pipeline(
     1. Your action_type MUST strictly be one of: fix_csv, clean_data, feature_engineer, generate_plot, train_model.
     2. If the user asks to train a model, you MUST inject 'feature_engineer' before 'train_model'.
     3. Inside the 'train_model' and 'feature_engineer' parameters, you MUST include 'target_column' with the exact name of the column to predict.
+    4. DO NOT PASS DATE RELATED COLUMNS TO FEATURE ENGINEERING NODE!
     """
 
     try:
-        print("🔍 Profiling data using Profiler Engine...")
+        print(f"🔍 Profiling data using Profiler Engine directly from {file_path}...")
         profile = profiler.generate_profile(file_path)
         
         print("🧠 Asking Llama 3 to generate DAG Contract...")
@@ -245,35 +249,84 @@ async def run_pipeline(
         raise HTTPException(status_code=500, detail=f"Engine Failure: {str(e)}")
 
 # ==========================================
-# 7. SECURE DOWNLOAD ENDPOINTS
+# 7. SECURE CLOUD DOWNLOAD ENDPOINTS (RESTORED)
 # ==========================================
+from fastapi.responses import StreamingResponse
+import s3fs
+
+def get_s3_fs():
+    """Helper to authenticate with MinIO for downloads."""
+    s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
+    s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
+    s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
+    
+    return s3fs.S3FileSystem(
+        client_kwargs={'endpoint_url': s3_endpoint},
+        key=s3_key,
+        secret=s3_secret
+    )
+
 @app.get("/api/download-model")
 async def download_model(current_user_id: str = Depends(verify_token)):
-    user_folder = os.path.join("data", current_user_id)
-    model_files = glob.glob(os.path.join(user_folder, "*.pkl"))
+    """Scans the user's cloud bucket for the newest model and streams it."""
+    fs = get_s3_fs()
+    bucket_path = f"{BUCKET_NAME}/{current_user_id}"
     
-    if not model_files:
-        raise HTTPException(status_code=404, detail="No trained model found. Run the pipeline first!")
+    try:
+        # Get all files in the user's cloud folder
+        files = fs.ls(bucket_path, detail=True)
+        model_files = [f for f in files if f['name'].endswith('.pkl')]
         
-    latest_model_path = max(model_files, key=os.path.getctime)
-    return FileResponse(
-        path=latest_model_path, 
-        filename="prism_ai_model.pkl", 
-        media_type='application/octet-stream'
-    )
+        if not model_files:
+            raise HTTPException(status_code=404, detail="No trained model found in cloud.")
+            
+        # Find the most recently modified model
+        latest_file = max(model_files, key=lambda x: x['LastModified'])
+        s3_path = f"s3://{latest_file['name']}"
+        
+        def iterfile():
+            with fs.open(s3_path, "rb") as f:
+                yield from f
+                
+        return StreamingResponse(
+            iterfile(), 
+            media_type='application/octet-stream', 
+            headers={"Content-Disposition": 'attachment; filename="prism_ai_model.pkl"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/download-clean-data")
 async def download_clean_data(current_user_id: str = Depends(verify_token)):
-    user_folder = os.path.join("data", current_user_id)
-    all_csvs = glob.glob(os.path.join(user_folder, "*.csv"))
-    generated_files = [f for f in all_csvs if "clean" in f or "fixed" in f or "engineered" in f]
+    """Scans the user's cloud bucket for the newest processed CSV and streams it."""
+    fs = get_s3_fs()
+    bucket_path = f"{BUCKET_NAME}/{current_user_id}"
     
-    if not generated_files:
-        raise HTTPException(status_code=404, detail="No processed dataset found.")
+    try:
+        # Get all files in the user's cloud folder
+        files = fs.ls(bucket_path, detail=True)
         
-    latest_path = max(generated_files, key=os.path.getctime)
-    return FileResponse(
-        path=latest_path, 
-        filename="prism_processed_data.csv", 
-        media_type='text/csv'
-    )
+        # Filter for files that are CSVs and contain our generated tags
+        generated_files = [
+            f for f in files 
+            if f['name'].endswith('.csv') and any(tag in f['name'] for tag in ["clean", "fixed", "engineered"])
+        ]
+        
+        if not generated_files:
+            raise HTTPException(status_code=404, detail="No processed dataset found in cloud.")
+            
+        # Find the most recently modified CSV
+        latest_file = max(generated_files, key=lambda x: x['LastModified'])
+        s3_path = f"s3://{latest_file['name']}"
+        
+        def iterfile():
+            with fs.open(s3_path, "rb") as f:
+                yield from f
+                
+        return StreamingResponse(
+            iterfile(), 
+            media_type='text/csv', 
+            headers={"Content-Disposition": 'attachment; filename="prism_processed_data.csv"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
