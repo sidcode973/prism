@@ -3,6 +3,7 @@ import json
 import uuid
 import chardet
 import csv
+import s3fs
 from typing import Dict, Any
 from groq import Groq
 
@@ -10,18 +11,42 @@ class PrismFixer:
     def __init__(self):
         print("🛠️ Prism CSV Fixer Initialized")
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.model = "llama-3.3-70b-versatile"
+        self.model = "openai/gpt-oss-120b"
+        
+        # Cloud Authentication Credentials
+        self.s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
+        self.s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
+        self.s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
+        
+
+    def _get_filesystem(self, is_s3: bool):
+        """Returns the appropriate filesystem client (S3 or Local)."""
+        if is_s3:
+            return s3fs.S3FileSystem(
+                client_kwargs={'endpoint_url': self.s3_endpoint},
+                key=self.s3_key,
+                secret=self.s3_secret
+            )
+        return None
 
     def execute_fix(self, node_id: str, file_path: str, parameters: Dict[str, Any]) -> str:
         print(f"🚑 Initiating Tier-1 Structural Repair on: {file_path}")
         
-        with open(file_path, 'rb') as f:
+        is_s3 = file_path.startswith("s3://")
+        fs = self._get_filesystem(is_s3)
+        
+        # Pro-Tip: Dynamically assign the open function so we don't duplicate code!
+        open_func = fs.open if is_s3 else open
+        
+        # 1. Detect Encoding securely
+        with open_func(file_path, 'rb') as f:
             raw_bytes = f.read(10000)
             result = chardet.detect(raw_bytes)
             encoding = result['encoding'] or 'utf-8'
             
+        # 2. Extract Sample Lines
         raw_lines = []
-        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+        with open_func(file_path, 'r', encoding=encoding, errors='replace') as f:
             for i, line in enumerate(f):
                 if i >= 15: break
                 raw_lines.append(line)
@@ -30,23 +55,26 @@ class PrismFixer:
         diagnosis = self._llm_diagnose_structure(raw_text_sample)
         print(f"🤖 LLM Structural Diagnosis: {diagnosis}")
 
-        dataset_directory = os.path.dirname(file_path)
+        # 3. Generate Cloud or Local Output Path
         run_id = uuid.uuid4().hex[:8]
-        fixed_path = os.path.join(dataset_directory, f"structurally_fixed_{run_id}.csv")
+        if is_s3:
+            directory = os.path.dirname(file_path)
+            fixed_path = f"{directory}/structurally_fixed_{run_id}.csv"
+        else:
+            dataset_directory = os.path.dirname(file_path)
+            fixed_path = os.path.join(dataset_directory, f"structurally_fixed_{run_id}.csv")
         
         true_delimiter = diagnosis.get("true_delimiter", ",")
         bad_delimiters = diagnosis.get("bad_delimiters_to_replace", [])
         
-        # Fallback to the header length if the LLM fails the count
         fixed_header = diagnosis.get("fixed_header_row", "")
         target_columns = diagnosis.get("intended_column_count", len(fixed_header.split(true_delimiter)) if fixed_header else 8)
 
-        with open(file_path, 'r', encoding=encoding, errors='replace', newline='') as infile, \
-             open(fixed_path, 'w', encoding='utf-8', newline='') as outfile:
+        # 4. Stream, Repair, and Write
+        with open_func(file_path, 'r', encoding=encoding, errors='replace', newline='') as infile, \
+             open_func(fixed_path, 'w', encoding='utf-8', newline='') as outfile:
             
             reader = csv.reader(infile, delimiter=true_delimiter, quotechar='"', escapechar='\\')
-            
-            # THE FIX: Force the output to ALWAYS be a standard comma-separated file
             writer = csv.writer(outfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
             
             if diagnosis.get("header_is_corrupted") and fixed_header:
@@ -56,8 +84,8 @@ class PrismFixer:
                 except Exception:
                     pass
             
+            # ---> THE HOLY RELIC: UNTOUCHED CLEANING LOGIC <---
             for row in reader:
-                # Skip rows that are completely empty or just contain empty commas
                 if not row or all(str(cell).strip() == "" for cell in row):
                     continue 
                     
@@ -74,11 +102,9 @@ class PrismFixer:
                     if not was_split:
                         cleaned_row.append(item.strip())
                 
-                # THE FIX: Pop all trailing empty strings caused by rogue commas at the end of rows
                 while len(cleaned_row) > 0 and cleaned_row[-1] == "":
                     cleaned_row.pop()
                 
-                # Pad or truncate row to match exact target columns
                 if len(cleaned_row) < target_columns:
                     cleaned_row.extend([""] * (target_columns - len(cleaned_row)))
                 elif len(cleaned_row) > target_columns:

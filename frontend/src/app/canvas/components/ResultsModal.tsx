@@ -1,61 +1,82 @@
 import React, { useState } from 'react';
-import { X, Download, ChevronLeft, ChevronRight, BarChart3, Database, BrainCircuit } from 'lucide-react';
+import { X, Download, ChevronLeft, ChevronRight, BarChart3, Database, BrainCircuit, Wrench, Sparkles, Binary } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
-import { useAuth } from "@clerk/nextjs"; // <-- 1. Import Clerk Auth
+import { useAuth } from "@clerk/nextjs"; 
 
 export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   const [chartIndex, setChartIndex] = useState(0);
-  const { getToken } = useAuth(); // <-- 2. Get the token fetcher
+  const { getToken } = useAuth(); 
 
   if (!isOpen || !pipelineResult) return null;
 
   const charts = pipelineResult.charts || [];
   const currentChart = charts[chartIndex];
 
-  // ---> THE FIX: Secure Blob Download <---
-  // ---> THE FIX: Secure Blob Download (Data) <---
-  const handleDownloadData = async () => {
+  // ==========================================
+  // THE ULTIMATE SCORE FIX: Aggressive Fallbacks & Rounding
+  // ==========================================
+  // Hunt for the model name under the new key OR the old key
+  const rawModel = pipelineResult.best_model || pipelineResult.metric;
+  const displayModel = rawModel ? rawModel.replace("BEST MODEL: ", "") : "Pipeline Executed";
+
+  // Hunt for the metric name and the numeric score safely
+  const metricName = pipelineResult.optimization_metric ? pipelineResult.optimization_metric.toUpperCase() : "SCORE";
+  let numericScore = pipelineResult.loss !== undefined ? pipelineResult.loss : (pipelineResult.score !== undefined ? pipelineResult.score : "N/A");
+
+  // THE FIX: Round off the score to 4 decimal places if it's a valid number
+  if (numericScore !== "N/A" && !isNaN(Number(numericScore))) {
+    numericScore = Number(numericScore).toFixed(4);
+  }
+
+  // Combine them cleanly -> "R2: 0.3092"
+  const displayScore = numericScore !== "N/A" ? `${metricName}: ${numericScore}` : "Check charts for details.";
+
+  const handleDownloadCSV = async (stage: string) => {
     try {
       const token = await getToken();
       
-      // FIX 1: Add a cache-buster (?t=...) so the browser doesn't block repeated clicks
-      const response = await fetch(`http://localhost:8000/api/download-clean-data?t=${Date.now()}`, {
+      const response = await fetch(`http://localhost:8000/api/download-csv?stage=${stage}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       
-      if (!response.ok) throw new Error("Download failed");
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        const errorMessage = errData?.detail || `Download failed for stage: ${stage}`;
+        throw new Error(errorMessage);
+      }
       
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = "prism_processed_data.csv";
+      a.download = `prism_${stage}_data.csv`;
       document.body.appendChild(a);
       a.click();
       
-      // FIX 2: Give the browser 1 second to start the download before destroying the link
       setTimeout(() => {
         window.URL.revokeObjectURL(url);
         a.remove();
       }, 1000);
       
-    } catch (error) {
-      console.error("Error downloading data:", error);
-      alert("⚠️ Failed to download data. Please check your connection.");
+    } catch (error: any) {
+      console.error(`Error downloading ${stage} data:`, error);
+      alert(`⚠️ ${error.message}`);
     }
   };
   
-  // ---> THE FIX: Secure Blob Download (Model) <---
   const handleDownloadModel = async () => {
     try {
       const token = await getToken();
       
-      // FIX 1: Add cache-buster
       const response = await fetch(`http://localhost:8000/api/download-model?t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       
-      if (!response.ok) throw new Error("Download failed");
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        const errorMessage = errData?.detail || "No model found or download failed.";
+        throw new Error(errorMessage);
+      }
       
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -65,15 +86,14 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
       document.body.appendChild(a);
       a.click();
       
-      // FIX 2: Give the browser 1 second to start the download
       setTimeout(() => {
         window.URL.revokeObjectURL(url);
         a.remove();
       }, 1000);
       
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error downloading model:", error);
-      alert("⚠️ Failed to download model. Please check your connection.");
+      alert(`⚠️ ${error.message}`);
     }
   };
  
@@ -97,42 +117,60 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
       <div className="flex-1 flex flex-col lg:flex-row h-full overflow-hidden">
         
         {/* LEFT PANEL: Metrics & Downloads */}
-        <div className="w-full lg:w-[400px] border-b-4 lg:border-b-0 lg:border-r-4 border-black p-8 flex flex-col gap-8 bg-white shrink-0 overflow-y-auto">
+        <div className="w-full lg:w-[450px] border-b-4 lg:border-b-0 lg:border-r-4 border-black p-8 flex flex-col gap-8 bg-white shrink-0 overflow-y-auto">
           <div>
             <h3 className="font-black text-xl text-gray-400 uppercase mb-2">Outcome</h3>
             <div className="p-4 border-4 border-black bg-purple-100 rounded-xl shadow-[4px_4px_0px_#000]">
-              <p className="font-black text-2xl uppercase">{pipelineResult.metric || "Pipeline Executed"}</p>
-              <p className="font-bold text-gray-600 mt-1">{pipelineResult.score || "Check charts for details."}</p>
+              <p className="font-black text-2xl uppercase">BEST MODEL: {displayModel}</p>
+              <p className="font-bold text-gray-600 mt-1 uppercase">{displayScore}</p>
             </div>
           </div>
 
           <div className="flex flex-col gap-4 mt-auto">
             <h3 className="font-black text-xl text-gray-400 uppercase">Artifacts</h3>
             
-            {pipelineResult.hasCleanData ? (
+            {/* THREE DISTINCT CSV DOWNLOAD BUTTONS */}
+            <div className="flex flex-col gap-3 border-4 border-black bg-gray-50 p-4 rounded-xl shadow-[4px_4px_0px_#000]">
+              <h4 className="font-bold text-sm text-gray-500 uppercase flex items-center gap-2 mb-1">
+                <Database size={16} /> Datasets
+              </h4>
+              
               <button 
-                onClick={handleDownloadData}
-                className="w-full py-4 px-6 border-4 border-black bg-blue-300 hover:bg-blue-400 rounded-xl shadow-[6px_6px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between font-black text-lg uppercase"
+                onClick={() => handleDownloadCSV('fixed')}
+                className="w-full py-3 px-4 border-4 border-black bg-blue-200 hover:bg-blue-300 rounded-lg active:translate-x-1 active:translate-y-1 transition-transform flex items-center justify-between font-black text-sm uppercase"
               >
-                <span className="flex items-center gap-3"><Database size={24} /> Get CSV Data</span>
-                <Download size={24} />
+                <span className="flex items-center gap-2"><Wrench size={18} /> Get Fixed CSV</span>
+                <Download size={18} />
               </button>
-            ) : (
-              <div className="w-full py-4 px-6 border-4 border-gray-300 bg-gray-100 rounded-xl flex items-center gap-3 font-bold text-gray-400 uppercase">
-                <Database size={24} /> No Data Generated
-              </div>
-            )}
 
-            {pipelineResult.hasModel ? (
+              <button 
+                onClick={() => handleDownloadCSV('cleaned')}
+                className="w-full py-3 px-4 border-4 border-black bg-cyan-200 hover:bg-cyan-300 rounded-lg active:translate-x-1 active:translate-y-1 transition-transform flex items-center justify-between font-black text-sm uppercase"
+              >
+                <span className="flex items-center gap-2"><Sparkles size={18} /> Get Cleaned CSV</span>
+                <Download size={18} />
+              </button>
+
+              <button 
+                onClick={() => handleDownloadCSV('engineered')}
+                className="w-full py-3 px-4 border-4 border-black bg-indigo-200 hover:bg-indigo-300 rounded-lg active:translate-x-1 active:translate-y-1 transition-transform flex items-center justify-between font-black text-sm uppercase"
+              >
+                <span className="flex items-center gap-2"><Binary size={18} /> Get ML Matrix</span>
+                <Download size={18} />
+              </button>
+            </div>
+
+            {/* MODEL DOWNLOAD BUTTON */}
+            {pipelineResult.hasModel || pipelineResult.best_model ? (
               <button 
                 onClick={handleDownloadModel}
-                className="w-full py-4 px-6 border-4 border-black bg-green-300 hover:bg-green-400 rounded-xl shadow-[6px_6px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between font-black text-lg uppercase"
+                className="w-full py-4 px-6 border-4 border-black bg-green-300 hover:bg-green-400 rounded-xl shadow-[6px_6px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between font-black text-lg uppercase mt-2"
               >
                 <span className="flex items-center gap-3"><BrainCircuit size={24} /> Get AI Model</span>
                 <Download size={24} />
               </button>
             ) : (
-              <div className="w-full py-4 px-6 border-4 border-gray-300 bg-gray-100 rounded-xl flex items-center gap-3 font-bold text-gray-400 uppercase">
+              <div className="w-full py-4 px-6 border-4 border-gray-300 bg-gray-100 rounded-xl flex items-center gap-3 font-bold text-gray-400 uppercase mt-2">
                 <BrainCircuit size={24} /> No Model Trained
               </div>
             )}

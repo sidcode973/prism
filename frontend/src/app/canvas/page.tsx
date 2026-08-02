@@ -13,9 +13,6 @@ import { ArrowLeft, Sparkles, BrainCircuit, Database, BarChart3, Settings, Bot, 
 import UploadModal from "./components/UploadModal";
 import ResultsModal from "./components/ResultsModal";
 
-// ==========================================
-// 1. CUSTOM EDGES & NODES
-// ==========================================
 const NeoEdge = ({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, style, markerEnd }: any) => {
   const [edgePath] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   return <BaseEdge path={edgePath} markerEnd={markerEnd} style={style} />;
@@ -111,9 +108,11 @@ const NeoNode = ({ data, id }: { data: any, id: string }) => {
 const nodeTypes: any = { neoNode: NeoNode };
 const edgeTypes: any = { neoEdge: NeoEdge };
 
-// ==========================================
-// 2. MAIN CANVAS BOARD
-// ==========================================
+interface DatasetRecord {
+  id: string;
+  file_name: string;
+}
+
 function CanvasBoard() {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const { getToken } = useAuth();
@@ -123,9 +122,11 @@ function CanvasBoard() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [pipelineResult, setPipelineResult] = useState<any>(null);
-  const [availableDatasets, setAvailableDatasets] = useState<string[]>([]);
   
-  const [selectedDataset, setSelectedDataset] = useState<string>("");
+  // THE FIX: Expecting objects with IDs and filenames from Postgres
+  const [availableDatasets, setAvailableDatasets] = useState<DatasetRecord[]>([]);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+  
   const [aiPrompt, setAiPrompt] = useState<string>("");
   const [isThinking, setIsThinking] = useState(false);
   
@@ -140,99 +141,14 @@ function CanvasBoard() {
       const response = await fetch("http://localhost:8000/api/datasets", { headers: { "Authorization": `Bearer ${token}` } });
       if (response.ok) {
         const data = await response.json();
-        setAvailableDatasets(Array.isArray(data.datasets) ? data.datasets.map((d:any) => String(d)) : []);
+        // Set the structured array directly
+        setAvailableDatasets(Array.isArray(data.datasets) ? data.datasets : []);
       }
     } catch (error) { console.error("Failed to fetch datasets"); }
   }, [getToken]);
 
   useEffect(() => { fetchDatasets(); }, [fetchDatasets]);
 
-  // ---> CONNECTION VALIDATION RULES <---
-  const onConnect = useCallback(
-    (params: any) => {
-      const sourceNode = nodes.find(n => n.id === params.source);
-      const targetNode = nodes.find(n => n.id === params.target);
-
-      if (!sourceNode || !targetNode) return;
-
-      // RULE 1: Cannot clean data AFTER training a model
-      if (sourceNode.data.action_type === 'train_model' && targetNode.data.action_type === 'clean_data') {
-        alert("🛑 INVALID PIPELINE: You cannot 'Clean Data' after a model is already trained. \n\nSuggested Format: Clean Data ➔ Feature Engineer ➔ Train Model");
-        return; 
-      }
-
-      // RULE 2: Cannot train a model directly from raw un-engineered data
-      if (sourceNode.data.action_type === 'load_dataset' && targetNode.data.action_type === 'train_model') {
-        alert("⚠️ WARNING: AI models cannot read raw text. You must connect 'Feature Engineer' before 'Train Model'.");
-        return;
-      }
-
-      setEdges((eds) => addEdge({ ...params, type: 'neoEdge', animated: true, style: { stroke: 'black', strokeWidth: 4 } }, eds));
-    },
-    [nodes, setEdges]
-  );
-
-  // ---> DRAG AND DROP LOGIC <---
-  const onDragStart = (event: any, nodeType: string, label: string, color: string) => {
-    const dragData = { action_type: nodeType, label, colorClass: color };
-    event.dataTransfer.setData('application/reactflow', JSON.stringify(dragData));
-    event.dataTransfer.effectAllowed = 'move';
-  };
-
-  const onDragOver = useCallback((event: any) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-  }, []);
-
- const onDrop = useCallback(
-    (event: any) => {
-      event.preventDefault();
-      
-      // 1. Safety check for TypeScript
-      if (!reactFlowWrapper.current) return;
-      
-      // 2. Get the bounds safely
-      const reactFlowBounds = reactFlowWrapper.current.getBoundingClientRect();
-      
-      // 3. Get the data being dragged
-      const nodeDataStr = event.dataTransfer.getData('application/reactflow');
-      
-      if (!nodeDataStr) return;
-      const parsedData = JSON.parse(nodeDataStr);
-
-
-      // Determine correct icon upon drop
-      let icon = <Settings size={20} />;
-      if (parsedData.action_type === 'load_dataset') icon = <Database size={20} />;
-      if (parsedData.action_type === 'fix_csv') icon = <Settings size={20} />;
-      if (parsedData.action_type === 'clean_data') icon = <Sparkles size={20} />;
-      if (parsedData.action_type === 'feature_engineer') icon = <Bot size={20} />;
-      if (parsedData.action_type === 'train_model') icon = <BrainCircuit size={20} />;
-      if (parsedData.action_type === 'generate_plot') icon = <BarChart3 size={20} />;
-
-      const position = screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-
-      const newNode = {
-        id: `${parsedData.action_type}_${Date.now()}`,
-        type: 'neoNode',
-        position,
-        data: { 
-            ...parsedData, 
-            description: 'Manually placed node.', 
-            icon, 
-            config: {} 
-        },
-      };
-
-      setNodes((nds) => nds.concat(newNode));
-    },
-    [screenToFlowPosition, setNodes]
-  );
-
-  // ---> AI AUTODRAW (Fallback) <---
   const autoDrawGraph = (dagStructure: any) => {
     const newNodes: any[] = [];
     const newEdges: any[] = [];
@@ -267,7 +183,7 @@ function CanvasBoard() {
   };
 
   const handleAIGenerate = async () => {
-    if (!selectedDataset) { alert("⚠️ Please select a dataset first!"); return; }
+    if (!selectedDatasetId) { alert("⚠️ Please select a dataset first!"); return; }
     if (!aiPrompt) { alert("⚠️ Please tell the AI what you want to do!"); return; }
 
     setIsThinking(true); setIsResultsPanelOpen(false); setNodes([]); setEdges([]); setSelectedNode(null);
@@ -275,7 +191,9 @@ function CanvasBoard() {
     try {
       const token = await getToken();
       const formData = new FormData();
-      formData.append("file_name", selectedDataset);
+      
+      // THE FIX: Pass dataset_id specifically to match the new backend schema
+      formData.append("dataset_id", selectedDatasetId);
       formData.append("prompt", aiPrompt);
 
       const response = await fetch("http://localhost:8000/api/run-pipeline", { method: "POST", headers: { "Authorization": `Bearer ${token}` }, body: formData });
@@ -293,21 +211,26 @@ function CanvasBoard() {
 
             if (data.execution_results.results) {
                 const rawResults = data.execution_results.results;
-                const rawCharts = Array.isArray(rawResults.charts) ? rawResults.charts : [];
-                const safeCharts = rawCharts.map((c: any, i: number) => {
-                    let safeTitle = `Chart ${i + 1}`;
-                    if (typeof c.title === 'string' && c.title) safeTitle = c.title;
-                    else if (c.title && typeof c.title.text === 'string' && c.title.text) safeTitle = c.title.text;
-                    return { title: safeTitle, echarts_payload: c.echarts_payload || c };
-                });
+const rawCharts = Array.isArray(rawResults.charts) ? rawResults.charts : [];
+const safeCharts = rawCharts.map((c: any, i: number) => {
+    let safeTitle = `Chart ${i + 1}`;
+    if (typeof c.title === 'string' && c.title) safeTitle = c.title;
+    else if (c.title && typeof c.title.text === 'string' && c.title.text) safeTitle = c.title.text;
+    return { title: safeTitle, echarts_payload: c.echarts_payload || c };
+});
                 
-                const hasProcessedFile = !!rawResults.cleaned_data_status || !!rawResults.fixed_data_path || !!rawResults.engineered_data_status;
-                
-                setPipelineResult({
-                    metric: rawResults.best_model ? `Best Model: ${String(rawResults.best_model)}` : (hasProcessedFile ? "Data Pipeline" : null),
-                    score: rawResults.loss !== undefined && rawResults.loss !== null ? (typeof rawResults.loss === 'number' ? rawResults.loss.toFixed(4) : String(rawResults.loss)) : (hasProcessedFile ? "File Ready to Download" : null),
-                    charts: safeCharts, hasModel: !!rawResults.best_model, hasCleanData: hasProcessedFile
-                });
+                // Inside handleAIGenerate in page.tsx
+
+
+// 👇 THIS IS THE CRITICAL FIX 👇
+setPipelineResult({
+    best_model: rawResults.best_model,
+    loss: rawResults.loss,
+    optimization_metric: rawResults.optimization_metric,
+    charts: safeCharts,
+    hasModel: !!rawResults.best_model,
+});
+setIsResultsPanelOpen(true);
                 setIsResultsPanelOpen(true); 
             } else {
                 alert("⚠️ The pipeline finished, but returned empty results.");
@@ -322,7 +245,6 @@ function CanvasBoard() {
   return (
     <div className="h-screen w-screen flex flex-col bg-[#fdfaf5] text-black font-sans overflow-hidden">
       
-      {/* 1. NEO-BRUTALIST LOADING ANIMATION */}
       {isThinking && (
         <div className="absolute inset-0 z-[9999] bg-[#fdfaf5]/90 backdrop-blur-md flex flex-col items-center justify-center overflow-hidden">
           <div className="absolute w-64 h-64 bg-yellow-300 border-8 border-black rounded-full mix-blend-multiply animate-[ping_3s_ease-in-out_infinite] opacity-50 -ml-32"></div>
@@ -345,8 +267,7 @@ function CanvasBoard() {
         onSuccess={() => { setIsUploadModalOpen(false); fetchDatasets(); }} 
       />
 
-      {/* 2. HEADER */}
-      <header className="h-20 border-b-4 border-black bg-white flex items-center justify-between px-6 z-10 shadow-[0px_4px_0px_#000] shrink-0 relative">
+      <header className="h-20 border-b-4 border-black bg-white flex items-center justify-between px-6 z-10 shadow-[0px_4px_0px_#000] shrink-0">
         <div className="flex items-center gap-4">
           <Link href="/">
             <button type="button" className="p-2 border-2 border-black bg-gray-100 hover:bg-gray-200 shadow-[2px_2px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all rounded-md">
@@ -358,36 +279,8 @@ function CanvasBoard() {
         <UserButton />
       </header>
 
-      {/* 3. MAIN WORKSPACE WITH SIDEBAR */}
       <main className="flex-1 w-full relative flex overflow-hidden">
         
-        {/* LEFT PANEL: DRAG & DROP TOOLBAR */}
-        <aside className="w-64 border-r-4 border-black bg-white flex flex-col z-20 shrink-0">
-          <div className="p-4 border-b-4 border-black bg-yellow-300">
-            <h2 className="font-black uppercase tracking-tight text-lg">Node Library</h2>
-            <p className="text-xs font-bold text-gray-700 mt-1">Drag tools onto the canvas</p>
-          </div>
-          <div className="p-4 flex flex-col gap-3 overflow-y-auto">
-            {/* The Draggable Tools */}
-            <div draggable onDragStart={(e) => onDragStart(e, 'fix_csv', 'Fix CSV', 'bg-red-300')} className="border-4 border-black p-3 rounded-xl cursor-grab active:cursor-grabbing hover:-translate-y-1 hover:shadow-[4px_4px_0px_#000] transition-all bg-gray-50 flex items-center gap-3">
-               <GripVertical size={16} className="text-gray-400" /> <Settings size={20} className="text-red-500" /> <span className="font-bold">Fix CSV</span>
-            </div>
-            <div draggable onDragStart={(e) => onDragStart(e, 'clean_data', 'Clean Data', 'bg-blue-300')} className="border-4 border-black p-3 rounded-xl cursor-grab active:cursor-grabbing hover:-translate-y-1 hover:shadow-[4px_4px_0px_#000] transition-all bg-gray-50 flex items-center gap-3">
-               <GripVertical size={16} className="text-gray-400" /> <Sparkles size={20} className="text-blue-500" /> <span className="font-bold">Clean Data</span>
-            </div>
-            <div draggable onDragStart={(e) => onDragStart(e, 'feature_engineer', 'Feature Eng', 'bg-orange-300')} className="border-4 border-black p-3 rounded-xl cursor-grab active:cursor-grabbing hover:-translate-y-1 hover:shadow-[4px_4px_0px_#000] transition-all bg-gray-50 flex items-center gap-3">
-               <GripVertical size={16} className="text-gray-400" /> <Bot size={20} className="text-orange-500" /> <span className="font-bold">Feature Eng</span>
-            </div>
-            <div draggable onDragStart={(e) => onDragStart(e, 'train_model', 'Train Model', 'bg-purple-300')} className="border-4 border-black p-3 rounded-xl cursor-grab active:cursor-grabbing hover:-translate-y-1 hover:shadow-[4px_4px_0px_#000] transition-all bg-gray-50 flex items-center gap-3">
-               <GripVertical size={16} className="text-gray-400" /> <BrainCircuit size={20} className="text-purple-500" /> <span className="font-bold">Train Model</span>
-            </div>
-            <div draggable onDragStart={(e) => onDragStart(e, 'generate_plot', 'Plot Graph', 'bg-pink-300')} className="border-4 border-black p-3 rounded-xl cursor-grab active:cursor-grabbing hover:-translate-y-1 hover:shadow-[4px_4px_0px_#000] transition-all bg-gray-50 flex items-center gap-3">
-               <GripVertical size={16} className="text-gray-400" /> <BarChart3 size={20} className="text-pink-500" /> <span className="font-bold">Plot Graph</span>
-            </div>
-          </div>
-        </aside>
-
-        {/* Floating Open Analysis Button */}
         {pipelineResult && !isThinking && !isResultsPanelOpen && !isUploadModalOpen && (
           <button type="button"
             onClick={() => setIsResultsPanelOpen(true)}
@@ -398,8 +291,7 @@ function CanvasBoard() {
           </button>
         )}
 
-        {/* React Flow Canvas */}
-        <div className="flex-1 relative pb-32" ref={reactFlowWrapper}> 
+        <div className="flex-1 relative pb-32"> 
           {nodes.length === 0 && !isThinking && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 pointer-events-none z-10">
               <Bot size={80} className="mb-4 opacity-50" />
@@ -424,21 +316,21 @@ function CanvasBoard() {
             <MiniMap className="border-4 border-black shadow-[4px_4px_0px_#000] rounded-xl bg-white" nodeColor="#000" maskColor="rgba(0,0,0,0.1)" />
           </ReactFlow>
 
-          {/* AI Prompt Bar */}
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-4xl z-20 px-4">
             <div className="bg-white border-4 border-black shadow-[8px_8px_0px_#000] rounded-2xl p-3 flex flex-col md:flex-row gap-3 items-center">
               
               <div className="w-full md:w-72 shrink-0 flex gap-2 items-center">
                 <select 
-                  value={selectedDataset}
-                  onChange={(e) => setSelectedDataset(e.target.value)}
+                  value={selectedDatasetId}
+                  onChange={(e) => setSelectedDatasetId(e.target.value)}
                   className="flex-1 min-w-0 w-full border-4 border-black rounded-xl p-3 font-bold bg-gray-100 focus:ring-4 focus:ring-purple-300 outline-none cursor-pointer text-sm truncate"
                 >
                   <option value="" disabled>
                     {availableDatasets.length === 0 ? "⚠️ No Hosted Files" : "1. Choose Target Dataset"}
                   </option>
-                  {availableDatasets.map((fileName) => (
-                    <option key={fileName} value={fileName}>📄 {fileName}</option>
+                  {availableDatasets.map((dataset) => (
+                    // THE FIX: Value is ID, Display is File Name
+                    <option key={dataset.id} value={dataset.id}>📄 {dataset.file_name}</option>
                   ))}
                 </select>
                 
@@ -479,8 +371,9 @@ function CanvasBoard() {
           pipelineResult={pipelineResult} 
         />
 
-        {/* RIGHT PANEL: Slide-out Parameter Inspector Panel */}
-        <div className={`h-full bg-white border-l-4 border-black transition-all duration-300 ease-in-out z-20 relative shrink-0 ${selectedNode ? "w-80 translate-x-0" : "w-0 translate-x-full border-l-0"}`}>
+        <div 
+          className={`h-full bg-white border-l-4 border-black transition-all duration-300 ease-in-out z-20 relative ${selectedNode ? "w-80 translate-x-0" : "w-0 translate-x-full border-l-0"}`}
+        >
           {selectedNode && (
             <div className="p-6 h-full flex flex-col overflow-y-auto w-80">
               <div className="flex items-center justify-between mb-8 border-b-4 border-black pb-4">
