@@ -11,8 +11,8 @@ import "@xyflow/react/dist/style.css";
 import { ArrowLeft, Sparkles, BrainCircuit, Database, BarChart3, Settings, Bot, Loader2, UploadCloud, X } from "lucide-react";
 
 import UploadModal from "./components/UploadModal";
-// Remove ResultsSidebar
 import ResultsModal from "./components/ResultsModal";
+
 const NeoEdge = ({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, style, markerEnd }: any) => {
   const [edgePath] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   return <BaseEdge path={edgePath} markerEnd={markerEnd} style={style} />;
@@ -39,6 +39,11 @@ const NeoNode = ({ data }: { data: any }) => {
 const nodeTypes: any = { neoNode: NeoNode };
 const edgeTypes: any = { neoEdge: NeoEdge };
 
+interface DatasetRecord {
+  id: string;
+  file_name: string;
+}
+
 function CanvasBoard() {
   const { fitView } = useReactFlow();
   const { getToken } = useAuth();
@@ -47,9 +52,11 @@ function CanvasBoard() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [pipelineResult, setPipelineResult] = useState<any>(null);
-  const [availableDatasets, setAvailableDatasets] = useState<string[]>([]);
   
-  const [selectedDataset, setSelectedDataset] = useState<string>("");
+  // THE FIX: Expecting objects with IDs and filenames from Postgres
+  const [availableDatasets, setAvailableDatasets] = useState<DatasetRecord[]>([]);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+  
   const [aiPrompt, setAiPrompt] = useState<string>("");
   const [isThinking, setIsThinking] = useState(false);
   
@@ -63,14 +70,15 @@ function CanvasBoard() {
       const response = await fetch("http://localhost:8000/api/datasets", { headers: { "Authorization": `Bearer ${token}` } });
       if (response.ok) {
         const data = await response.json();
-        setAvailableDatasets(Array.isArray(data.datasets) ? data.datasets.map((d:any) => String(d)) : []);
+        // Set the structured array directly
+        setAvailableDatasets(Array.isArray(data.datasets) ? data.datasets : []);
       }
     } catch (error) { console.error("Failed to fetch datasets"); }
   }, [getToken]);
 
   useEffect(() => { fetchDatasets(); }, [fetchDatasets]);
 
-const autoDrawGraph = (dagStructure: any) => {
+  const autoDrawGraph = (dagStructure: any) => {
     const newNodes: any[] = [];
     const newEdges: any[] = [];
 
@@ -79,23 +87,12 @@ const autoDrawGraph = (dagStructure: any) => {
       let icon = <Settings size={20} />;
       let uiLabel = n.action_type;
 
-      // ---> EXISTING NODES <---
       if (n.action_type === 'load_dataset') { color = 'bg-green-300'; icon = <Database size={20} />; uiLabel = "Raw Data"; }
       if (n.action_type === 'clean_data') { color = 'bg-blue-300'; icon = <Sparkles size={20} />; uiLabel = "Clean Data"; }
       if (n.action_type === 'train_model') { color = 'bg-purple-300'; icon = <BrainCircuit size={20} />; uiLabel = "Train Model"; }
       if (n.action_type === 'generate_plot') { color = 'bg-pink-300'; icon = <BarChart3 size={20} />; uiLabel = "Plot Graph"; } 
-
-      // ---> NEW NODES <---
-      if (n.action_type === 'fix_csv') { 
-        color = 'bg-red-300'; 
-        icon = <Settings size={20} />; 
-        uiLabel = "Fix CSV"; 
-      }
-      if (n.action_type === 'feature_engineer') { 
-        color = 'bg-orange-300'; 
-        icon = <Bot size={20} />; 
-        uiLabel = "Feature Eng"; 
-      }
+      if (n.action_type === 'fix_csv') { color = 'bg-red-300'; icon = <Settings size={20} />; uiLabel = "Fix CSV"; }
+      if (n.action_type === 'feature_engineer') { color = 'bg-orange-300'; icon = <Bot size={20} />; uiLabel = "Feature Eng"; }
 
       newNodes.push({
         id: n.node_id, type: 'neoNode', position: { x: 100 + (index * 320), y: 250 }, 
@@ -115,7 +112,7 @@ const autoDrawGraph = (dagStructure: any) => {
   };
 
   const handleAIGenerate = async () => {
-    if (!selectedDataset) { alert("⚠️ Please select a dataset first!"); return; }
+    if (!selectedDatasetId) { alert("⚠️ Please select a dataset first!"); return; }
     if (!aiPrompt) { alert("⚠️ Please tell the AI what you want to do!"); return; }
 
     setIsThinking(true); setIsResultsPanelOpen(false); setNodes([]); setEdges([]); setSelectedNode(null);
@@ -123,7 +120,9 @@ const autoDrawGraph = (dagStructure: any) => {
     try {
       const token = await getToken();
       const formData = new FormData();
-      formData.append("file_name", selectedDataset);
+      
+      // THE FIX: Pass dataset_id specifically to match the new backend schema
+      formData.append("dataset_id", selectedDatasetId);
       formData.append("prompt", aiPrompt);
 
       const response = await fetch("http://localhost:8000/api/run-pipeline", { method: "POST", headers: { "Authorization": `Bearer ${token}` }, body: formData });
@@ -131,34 +130,36 @@ const autoDrawGraph = (dagStructure: any) => {
       if (response.ok) {
         const data = await response.json();
         
-        // Always draw the graph if it exists
         if (data.dag_structure) autoDrawGraph(data.dag_structure);
         
         if (data.execution_results) {
-            // THE FIX: Listen for Orchestrator errors and display them!
             if (data.execution_results.status === "error" || data.execution_results.status === "warning") {
                 alert(`🛑 AI Engine Interrupted:\n${data.execution_results.message}`);
-                return; // Stop processing, don't open the modal
+                return; 
             }
 
-            // Normal Success Flow
             if (data.execution_results.results) {
                 const rawResults = data.execution_results.results;
-                const rawCharts = Array.isArray(rawResults.charts) ? rawResults.charts : [];
-                const safeCharts = rawCharts.map((c: any, i: number) => {
-                    let safeTitle = `Chart ${i + 1}`;
-                    if (typeof c.title === 'string' && c.title) safeTitle = c.title;
-                    else if (c.title && typeof c.title.text === 'string' && c.title.text) safeTitle = c.title.text;
-                    return { title: safeTitle, echarts_payload: c.echarts_payload || c };
-                });
+const rawCharts = Array.isArray(rawResults.charts) ? rawResults.charts : [];
+const safeCharts = rawCharts.map((c: any, i: number) => {
+    let safeTitle = `Chart ${i + 1}`;
+    if (typeof c.title === 'string' && c.title) safeTitle = c.title;
+    else if (c.title && typeof c.title.text === 'string' && c.title.text) safeTitle = c.title.text;
+    return { title: safeTitle, echarts_payload: c.echarts_payload || c };
+});
                 
-                const hasProcessedFile = !!rawResults.cleaned_data_status || !!rawResults.fixed_data_path || !!rawResults.engineered_data_status;
-                
-                setPipelineResult({
-                    metric: rawResults.best_model ? `Best Model: ${String(rawResults.best_model)}` : (hasProcessedFile ? "Data Pipeline" : null),
-                    score: rawResults.loss !== undefined && rawResults.loss !== null ? (typeof rawResults.loss === 'number' ? rawResults.loss.toFixed(4) : String(rawResults.loss)) : (hasProcessedFile ? "File Ready to Download" : null),
-                    charts: safeCharts, hasModel: !!rawResults.best_model, hasCleanData: hasProcessedFile
-                });
+                // Inside handleAIGenerate in page.tsx
+
+
+// 👇 THIS IS THE CRITICAL FIX 👇
+setPipelineResult({
+    best_model: rawResults.best_model,
+    loss: rawResults.loss,
+    optimization_metric: rawResults.optimization_metric,
+    charts: safeCharts,
+    hasModel: !!rawResults.best_model,
+});
+setIsResultsPanelOpen(true);
                 setIsResultsPanelOpen(true); 
             } else {
                 alert("⚠️ The pipeline finished, but returned empty results.");
@@ -173,7 +174,6 @@ const autoDrawGraph = (dagStructure: any) => {
   return (
     <div className="h-screen w-screen flex flex-col bg-[#fdfaf5] text-black font-sans overflow-hidden">
       
-      {/* 1. EXTRACTED UPLOAD MODAL */}
       {isThinking && (
         <div className="absolute inset-0 z-[9999] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center">
           <Loader2 size={64} className="animate-spin text-purple-600 mb-4" />
@@ -188,7 +188,6 @@ const autoDrawGraph = (dagStructure: any) => {
         onSuccess={() => { setIsUploadModalOpen(false); fetchDatasets(); }} 
       />
 
-      {/* 2. HEADER */}
       <header className="h-20 border-b-4 border-black bg-white flex items-center justify-between px-6 z-10 shadow-[0px_4px_0px_#000] shrink-0">
         <div className="flex items-center gap-4">
           <Link href="/">
@@ -201,10 +200,8 @@ const autoDrawGraph = (dagStructure: any) => {
         <UserButton />
       </header>
 
-      {/* 3. MAIN WORKSPACE */}
       <main className="flex-1 w-full relative flex overflow-hidden">
         
-        {/* Floating Open Analysis Button */}
         {pipelineResult && !isThinking && !isResultsPanelOpen && !isUploadModalOpen && (
           <button type="button"
             onClick={() => setIsResultsPanelOpen(true)}
@@ -215,7 +212,6 @@ const autoDrawGraph = (dagStructure: any) => {
           </button>
         )}
 
-        {/* React Flow Canvas */}
         <div className="flex-1 relative pb-32"> 
           {nodes.length === 0 && !isThinking && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 pointer-events-none z-10">
@@ -238,21 +234,21 @@ const autoDrawGraph = (dagStructure: any) => {
             <MiniMap className="border-4 border-black shadow-[4px_4px_0px_#000] rounded-xl bg-white" nodeColor="#000" maskColor="rgba(0,0,0,0.1)" />
           </ReactFlow>
 
-          {/* AI Prompt Bar - THE FIX: Using shrink-0 and min-w-0 blocks flexbox from squishing elements */}
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-4xl z-20 px-4">
             <div className="bg-white border-4 border-black shadow-[8px_8px_0px_#000] rounded-2xl p-3 flex flex-col md:flex-row gap-3 items-center">
               
               <div className="w-full md:w-72 shrink-0 flex gap-2 items-center">
                 <select 
-                  value={selectedDataset}
-                  onChange={(e) => setSelectedDataset(e.target.value)}
+                  value={selectedDatasetId}
+                  onChange={(e) => setSelectedDatasetId(e.target.value)}
                   className="flex-1 min-w-0 w-full border-4 border-black rounded-xl p-3 font-bold bg-gray-100 focus:ring-4 focus:ring-purple-300 outline-none cursor-pointer text-sm truncate"
                 >
                   <option value="" disabled>
                     {availableDatasets.length === 0 ? "⚠️ No Hosted Files" : "1. Choose Target Dataset"}
                   </option>
-                  {availableDatasets.map((fileName) => (
-                    <option key={fileName} value={fileName}>📄 {fileName}</option>
+                  {availableDatasets.map((dataset) => (
+                    // THE FIX: Value is ID, Display is File Name
+                    <option key={dataset.id} value={dataset.id}>📄 {dataset.file_name}</option>
                   ))}
                 </select>
                 
@@ -288,15 +284,12 @@ const autoDrawGraph = (dagStructure: any) => {
           </div>
         </div>
 
-        {/* ---> RESULTS SIDEBAR COMPONENT <--- */}
-      {/* ---> FULL SCREEN RESULTS MODAL <--- */}
         <ResultsModal 
           isOpen={isResultsPanelOpen} 
           onClose={() => setIsResultsPanelOpen(false)} 
           pipelineResult={pipelineResult} 
         />
 
-        {/* Slide-out Parameter Inspector Panel */}
         <div 
           className={`h-full bg-white border-l-4 border-black transition-all duration-300 ease-in-out z-20 relative ${selectedNode ? "w-80 translate-x-0" : "w-0 translate-x-full border-l-0"}`}
         >

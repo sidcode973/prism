@@ -38,11 +38,11 @@ class PrismDAGExecutor:
             "null_values": ["NA", "N/A", "null", "NaN", "?", "", " ", "-", "unknown", "Unknown"],
             "ignore_errors": True,
             "truncate_ragged_lines": True,
-            "quote_char": None  # <--- THE MISSING MAGIC SHIELD
+            # Quote char purposely left enabled to prevent thousand-separator fragmentation
         }
         
         if is_s3:
-            # THE FIX: Decapitate Polars' S3 engine and read bytes natively
+            # Decapitate Polars' S3 engine and read bytes natively
             fs = s3fs.S3FileSystem(
                 client_kwargs={'endpoint_url': self.s3_endpoint},
                 key=self.s3_key,
@@ -92,10 +92,18 @@ class PrismDAGExecutor:
         except PrismCoreError as e:
             return {"status": "warning", "message": str(e)}
 
-        # 2. The Relay Race States
-        current_path = raw_data_path  # Always points to the most recently saved file
-        current_df = None             # Holds the loaded Polars DataFrame
+        # ==========================================
+        # 2. DUAL-TRACK STATE MANAGEMENT
+        # Structurally separates human-readable data from ML matrices
+        # ==========================================
+        human_path = raw_data_path 
+        human_df = None             
+        
+        engineered_path = None
+        engineered_df = None
+        
         results = {}
+        pipeline_metadata = {} 
 
         try:
             for node_id in execution_order:
@@ -106,37 +114,53 @@ class PrismDAGExecutor:
                 print(f"▶️ Executing Node: {node_id} ({action})")
 
                 if action == "fix_csv":
-                    current_path = self.fixer.execute_fix(node_id, current_path, params)
-                    current_df = None # Invalidate the DF since the file just changed
-                    results["fixed_data_path"] = current_path
+                    human_path = self.fixer.execute_fix(node_id, human_path, params)
+                    human_df = None # Invalidate the DF since the file just changed
+                    results["fixed_data_path"] = human_path
 
                 elif action == "clean_data":
-                    current_df, current_path = self.cleaner.execute_cleaning(node_id, current_path, params)
+                    human_df, human_path, column_roles = self.cleaner.execute_cleaning(node_id, human_path, params)
+                    pipeline_metadata["column_roles"] = column_roles
                     results["cleaned_data_status"] = "success"
-                    results["cleaned_data_path"] = current_path
+                    results["cleaned_data_path"] = human_path
+                    results["metadata"] = pipeline_metadata
 
                 elif action == "feature_engineer":
-                    current_df, current_path = self.engineer.execute_engineering(node_id, current_path, params)
+                    if "column_roles" in pipeline_metadata:
+                        params["column_roles"] = pipeline_metadata["column_roles"]
+                        
+                    # Notice we pass 'human_path' IN, but assign output to the engineered track
+                    engineered_df, engineered_path = self.engineer.execute_engineering(node_id, human_path, params)
                     results["engineered_data_status"] = "success"
-                    results["engineered_data_path"] = current_path
+                    results["engineered_data_path"] = engineered_path
 
                 elif action == "train_model":
-                    if current_df is None:
-                        # THE FIX: Safely route through the new unified Cloud I/O method
-                        current_df = self._safe_cloud_read(current_path)
+                    # Trainer strictly uses the engineered track
+                    if engineered_df is None:
+                        if engineered_path is None:
+                            raise TrainingConfigurationError(node_id=node_id, message="Engineered data missing. Feature Engineering must run before Training.")
+                        engineered_df = self._safe_cloud_read(engineered_path)
                         
-                    model, saved_path = self.trainer.execute_training(node_id, current_df, params, raw_data_path)
+                    if "column_roles" in pipeline_metadata:
+                        params["exclude_columns"] = [col for col, role in pipeline_metadata["column_roles"].items() if role == "identifier"]
+                        
+                    model, saved_path = self.trainer.execute_training(node_id, engineered_df, params, raw_data_path)
+                    
                     results["best_model"] = str(model.best_estimator)
                     results["loss"] = model.best_loss
+                    
+                    # Passing placeholders up to the UI until we fix trainer.py
+                    results["optimization_metric"] = params.get("metric", "auto")
+                    results["task_type"] = params.get("task", "auto")
                     results["trained_model_path"] = saved_path
 
                 elif action == "generate_plot":
-                    if current_df is None:
-                        print("📥 Auto-loading raw data for the Plotter...")
-                        # THE FIX: Safely route through the new unified Cloud I/O method
-                        current_df = self._safe_cloud_read(current_path)
+                    # Plotter strictly uses the human-readable track! It never graphs scaled ML arrays.
+                    if human_df is None:
+                        print("📥 Auto-loading raw/cleaned data for the Plotter...")
+                        human_df = self._safe_cloud_read(human_path)
 
-                    plot_data = self.plotter.generate_plot(node_id, current_df, params)
+                    plot_data = self.plotter.generate_plot(node_id, human_df, params)
                     
                     if "charts" not in results:
                         results["charts"] = []
