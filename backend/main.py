@@ -156,10 +156,17 @@ async def upload_dataset(
 # ==========================================
 # 5. THE AI ROUTER ENDPOINT (POSTGRES LOGGED)
 # ==========================================
+import json
+from typing import Optional
+from fastapi import Form, Depends, HTTPException
+# Ensure you have 'json' and 'Optional' imported at the top of your file!
+
 @app.post("/api/run-pipeline")
 async def run_pipeline(
     dataset_id: str = Form(...),
     prompt: str = Form(...),
+    manual_nodes: Optional[str] = Form(None), # <--- THE FIX: Accept the frontend data
+    manual_edges: Optional[str] = Form(None), # <--- THE FIX: Accept the frontend data
     current_user_id: str = Depends(verify_token),
     db: Session = Depends(get_db)
 ):
@@ -187,7 +194,32 @@ async def run_pipeline(
     db.commit()
     db.refresh(pipeline_run)
 
-    backend_enforced_prompt = prompt + """
+    # ---------------------------------------------------------
+    # THE BRIDGE: Inject the Manual Canvas State into Llama 3
+    # ---------------------------------------------------------
+    manual_context = ""
+    if manual_nodes:
+        try:
+            # We parse them just to ensure they are valid JSON
+            parsed_nodes = json.loads(manual_nodes)
+            parsed_edges = json.loads(manual_edges) if manual_edges else []
+            
+            print(f"📥 Received {len(parsed_nodes)} manual nodes from frontend canvas.")
+            
+            # Inject them directly into the LLM's brain
+            manual_context = f"""
+            
+            [USER MANUAL CANVAS STATE]:
+            The user has already dragged nodes onto their canvas. You MUST include these exact nodes in your final execution plan.
+            If they left a parameter blank, use your expertise to fill in the best mathematical approach.
+            Nodes: {json.dumps(parsed_nodes)}
+            Edges: {json.dumps(parsed_edges)}
+            """
+        except json.JSONDecodeError:
+            print("⚠️ Failed to parse manual_nodes JSON.")
+
+
+    backend_enforced_prompt = prompt + manual_context + """
     
     [URGENT SYSTEM OVERRIDE RULES]:
     1. Your action_type MUST strictly be one of: fix_csv, clean_data, feature_engineer, generate_plot, train_model.
@@ -250,7 +282,7 @@ async def run_pipeline(
         return {
             "dag_structure": validated_response.pipeline.model_dump(),
             "execution_results": final_response,
-            "run_id": str(pipeline_run.id) # Ensure this is passed as string
+            "run_id": str(pipeline_run.id)
         }
         
     except HTTPException as he:
@@ -262,7 +294,6 @@ async def run_pipeline(
         db.commit()
         print(f"❌ Core ML Engine Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Engine Failure: {str(e)}")
-
 # ==========================================
 # 6. SECURE CLOUD DOWNLOAD ENDPOINTS
 # ==========================================

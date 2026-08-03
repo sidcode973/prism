@@ -61,26 +61,10 @@ class PrismEngineer:
         target_col = parameters.get("target_column")
         if target_col:
             target_col = target_col.strip()
-<<<<<<< HEAD
-            
-            # 1. First, check if the exact string exists
-            if target_col not in df.columns:
-                
-                # 2. If not, do a "Fuzzy Match" ignoring case, spaces, and underscores
-                for col in df.columns:
-                    clean_col = col.lower().replace(" ", "").replace("_", "")
-                    clean_target = target_col.lower().replace(" ", "").replace("_", "")
-                    
-                    if clean_col == clean_target:
-                        target_col = col
-                        print(f"🔍 Auto-corrected target column typo to match dataset: '{target_col}'")
-                        break
-=======
             for col in df.columns:
                 if col.strip().lower() == target_col.lower():
                     target_col = col
                     break
->>>>>>> c2e775452a61977776262acfa690ddd2f2217bdf
 
         column_roles = parameters.get("column_roles", {})
         exclude_cols = parameters.get("exclude_columns", [])
