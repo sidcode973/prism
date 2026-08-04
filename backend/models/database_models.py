@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Float
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Float, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
@@ -61,6 +61,12 @@ class PipelineRun(Base):
     blueprint_path = Column(String, nullable=True)
     charts_path = Column(String, nullable=True)
     model_artifact_path = Column(String, nullable=True)
+
+    # ==========================================
+    # 🚀 DEPLOYMENT ENGINE TRACKING 🚀
+    # ==========================================
+    is_deployed = Column(Boolean, default=False)
+    api_endpoint = Column(String, nullable=True)
 
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)

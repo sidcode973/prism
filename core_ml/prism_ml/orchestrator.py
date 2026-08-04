@@ -148,20 +148,38 @@ class PrismDAGExecutor:
                     if "column_roles" in master_blueprint:
                         params["exclude_columns"] = [col for col, role in master_blueprint.get("column_roles", {}).items() if role == "identifier"]
                         
-                    model, saved_path, train_blueprint = self.trainer.execute_training(node_id, engineered_df, params, raw_data_path, master_run_id)
+                    model, saved_path, train_blueprint = self.trainer.execute_training(node_id, engineered_df, params, raw_data_path, master_run_id, master_blueprint)
                     
                     master_blueprint.update(train_blueprint)
                     
                     meta = train_blueprint.get("__training_metadata__", {})
                     results["best_model"] = meta.get("best_estimator", str(model.best_estimator))
                     
-                    # 🛡️ THE BULLETPROOF FLOAT FIREWALL 🛡️
+                   # 🛡️ THE BULLETPROOF FLOAT FIREWALL 🛡️
                     raw_score = meta.get("final_score")
                     results["loss"] = float(raw_score) if raw_score is not None else None
                     
                     results["optimization_metric"] = meta.get("metric")
                     results["task_type"] = meta.get("task")
                     results["trained_model_path"] = saved_path
+
+                    # ==========================================
+                    # 🧠 THE DYNAMIC FORM EXTRACTOR 🧠
+                    # ==========================================
+                    try:
+                        clean_header_df = self._safe_cloud_read(human_path)
+                        raw_cols = [c for c in clean_header_df.columns if c != params.get("target_column")]
+                        
+                        identifiers = [col for col, role in master_blueprint.get("column_roles", {}).items() if role == "identifier"]
+                        final_features = [c for c in raw_cols if c not in identifiers]
+                        
+                        results["feature_names"] = final_features
+                        # 💾 Save to blueprint for persistent frontend fetching!
+                        master_blueprint["human_readable_features"] = final_features
+                    except Exception as e:
+                        print(f"⚠️ Could not extract clean headers for form: {e}")
+                        results["feature_names"] = meta.get("feature_names", [])
+                        master_blueprint["human_readable_features"] = results["feature_names"]
 
                 elif action == "generate_plot":
                     if human_df is None:
@@ -208,6 +226,10 @@ class PrismDAGExecutor:
             
             results["blueprint_path"] = blueprint_path
             results["run_id"] = master_run_id
+            
+            # 🚀 THE FIX: Passing charts_path back to the engine!
+            if charts_data:
+                results["charts_path"] = charts_path
 
             return {
                 "status": "success",

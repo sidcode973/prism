@@ -44,6 +44,7 @@ def execute_pipeline_task(contract_dict: dict, file_path: str, master_run_id: st
             run.final_score = results.get("loss")
             run.blueprint_path = results.get("blueprint_path")
             run.model_artifact_path = results.get("trained_model_path")
+            run.charts_path = results.get("charts_path")
             run.completed_at = func.now()
             db.commit()
             

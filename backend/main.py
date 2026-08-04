@@ -30,6 +30,7 @@ if core_ml_dir not in sys.path:
 from prism_ml.profile.profiler import PrismProfiler
 from prism_ml.agent.router import PrismRouterAgent, RouterResponse
 from prism_ml.orchestrator import PrismDAGExecutor
+from prism_ml.inference.predictor import PrismPredictor
 
 # ==========================================
 # 3. CELERY TASK IMPORTS
@@ -106,6 +107,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
 profiler = PrismProfiler()
 agent = PrismRouterAgent()
 executor = PrismDAGExecutor()
+predictor = PrismPredictor()
 
 def get_s3_fs():
     s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
@@ -387,7 +389,7 @@ async def run_pipeline(
 
         if async_mode:
             print(f"⚡ Dispatching Run {master_run_id} to Celery Task Queue...")
-            from celery_worker import execute_pipeline_task
+            
             execute_pipeline_task.delay(contract_dict, file_path, master_run_id, current_user_id)
             return {
                 "status": "queued",
@@ -409,6 +411,7 @@ async def run_pipeline(
             pipeline_run.final_score = safe_loss
             pipeline_run.blueprint_path = results.get("blueprint_path")
             pipeline_run.model_artifact_path = results.get("trained_model_path")
+            pipeline_run.charts_path = results.get("charts_path")
             pipeline_run.completed_at = func.now()
             
             db.commit()
@@ -506,3 +509,150 @@ async def download_csv(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSV Download Error: {str(e)}")
+
+# ==========================================
+# 🚀 MODEL DEPLOYMENT & INFERENCE ENDPOINTS
+# ==========================================
+@app.post("/api/models/deploy/{run_id}")
+async def deploy_model(
+    run_id: str, 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    """Flags a successfully trained model as actively deployed and returns the API endpoint."""
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run or not run.model_artifact_path or not run.blueprint_path:
+        raise HTTPException(status_code=404, detail="Model artifacts or blueprint missing. Cannot deploy.")
+
+    run.is_deployed = True
+    run.api_endpoint = f"/api/predict/{run_id}"
+    db.commit()
+
+    return {
+        "status": "success", 
+        "message": "Model deployed successfully to Prism Inference Engine.", 
+        "api_endpoint": run.api_endpoint
+    }
+
+@app.post("/api/predict/{run_id}")
+async def predict_live(
+    run_id: str, 
+    payload: Dict[str, Any], 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    """Live serving endpoint. Transforms raw JSON via the Blueprint and runs inference."""
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run or not run.is_deployed:
+        raise HTTPException(status_code=404, detail="Deployed model not found or is inactive.")
+
+    try:
+        prediction_result = predictor.predict(
+            input_data=payload,
+            blueprint_path=run.blueprint_path,
+            model_path=run.model_artifact_path
+        )
+        return {"status": "success", "data": prediction_result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference execution failed: {str(e)}")
+
+@app.get("/api/predict/{run_id}/features")
+async def get_model_features(
+    run_id: str, 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    """Retrieves the human-readable features permanently saved in the blueprint."""
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run or not run.blueprint_path:
+        raise HTTPException(status_code=404, detail="Blueprint not found.")
+
+    fs = get_s3_fs()
+    s3_path = run.blueprint_path if run.blueprint_path.startswith("s3://") else f"s3://{run.blueprint_path}"
+
+    try:
+        with fs.open(s3_path, 'r') as f:
+            blueprint = json.load(f)
+            
+        features = blueprint.get("human_readable_features", blueprint.get("__training_metadata__", {}).get("feature_names", []))
+        return {"features": features}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read blueprint: {str(e)}")
+
+# ==========================================
+# 🗄️ HISTORY & STORAGE MANAGEMENT ENDPOINTS
+# ==========================================
+@app.get("/api/history")
+async def get_history(current_user_id: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """Fetches all pipeline runs for the user dashboard."""
+    runs = db.query(PipelineRun).filter(PipelineRun.user_id == current_user_id).order_by(PipelineRun.id.desc()).all()
+    
+    history_data = []
+    for run in runs:
+        # 🛡️ Data Integrity Check: Safely handle deleted datasets
+        dataset = db.query(DatasetMetadata).filter(DatasetMetadata.id == run.dataset_id).first()
+        dataset_name = dataset.file_name if dataset else "Deleted Dataset"
+        
+        history_data.append({
+            "id": run.id,
+            "dataset_name": dataset_name,
+            "status": run.status,
+            "task_type": run.task_type,
+            "best_model_name": run.best_model_name,
+            "optimization_metric": run.optimization_metric,
+            "final_score": run.final_score,
+            "is_deployed": run.is_deployed,
+            "api_endpoint": run.api_endpoint,
+            "completed_at": run.completed_at
+        })
+    return {"history": history_data}
+
+@app.delete("/api/history/{run_id}")
+async def delete_pipeline_run(run_id: str, current_user_id: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """Deletes a pipeline run to free up DB space."""
+    run = db.query(PipelineRun).filter(PipelineRun.id == run_id, PipelineRun.user_id == current_user_id).first()
+    
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found.")
+        
+    db.delete(run)
+    db.commit()
+    return {"status": "success", "message": f"Run {run_id} deleted successfully."}
+@app.get("/api/history/{run_id}/details")
+async def get_run_details(run_id: str, current_user_id: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """Fetches full run details, including charts, to re-hydrate the Results Modal."""
+    run = db.query(PipelineRun).filter(PipelineRun.id == run_id, PipelineRun.user_id == current_user_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    
+    charts_data = []
+    if run.charts_path:
+        fs = get_s3_fs()
+        s3_path = run.charts_path if run.charts_path.startswith("s3://") else f"s3://{run.charts_path}"
+        try:
+            with fs.open(s3_path, 'r') as f:
+                charts_data = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Failed to load charts from cloud: {e}")
+
+    return {
+        "run_id": run.id,
+        "best_model": run.best_model_name,
+        "optimization_metric": run.optimization_metric,
+        "loss": run.final_score,
+        "is_deployed": run.is_deployed,
+        "api_endpoint": run.api_endpoint,
+        "charts": charts_data
+    }

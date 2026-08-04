@@ -129,11 +129,12 @@ class PrismRouterAgent:
              "x_col": "ExactColumnNameFromSchema" (Required for all except heatmap)
              "y_col": "ExactColumnNameFromSchema" (Required for scatter, bar, boxplot)
              "title": "A descriptive title for the chart"
-
+            "color": "must be a categorical column from the schema" (Optional, but recommended for better plots)
         5. "train_model": Use to train ML models.
            - Params MUST strictly include:
              "target_column": "ExactColumnNameFromSchema" (Must exactly match feature_engineer target)
              "model_type": "auto"
+             "metric": "auto"|"r2"|"mae"|"rmse"|"accuracy"|"f1" (Set to specific metric if requested, else "auto")
 
         --- AUTONOMY, GRAPH SELECTION & ABORT RULES ---
         - ML AUTONOMY: If the user asks to train a model, you MUST inject `fix_csv` -> `clean_data` -> `feature_engineer` before the `train_model` node.
@@ -154,7 +155,7 @@ class PrismRouterAgent:
                     {{"node_id": "clean_1", "action_type": "clean_data", "parameters": {{"auto_purge": true, "coerce_types": true, "remove_duplicates": true, "drop_columns": [], "impute_rules": {{}}}}}},
                     {{"node_id": "plot_1", "action_type": "generate_plot", "parameters": {{"chart_type": "scatter", "x_col": "Age", "y_col": "Salary", "title": "Age vs Salary"}}}},
                     {{"node_id": "fe_1", "action_type": "feature_engineer", "parameters": {{"target_column": "Salary", "scale_method": "standard", "encode_categoricals": true, "exclude_columns": []}}}},
-                    {{"node_id": "train_1", "action_type": "train_model", "parameters": {{"target_column": "Salary", "model_type": "auto"}}}}
+                    {{"node_id": "train_1", "action_type": "train_model", "parameters": {{"target_column": "Salary", "model_type": "auto", "metric": "auto"}}}}
                 ],
                 "execution_order": ["fix_1", "clean_1", "plot_1", "fe_1", "train_1"]
             }}

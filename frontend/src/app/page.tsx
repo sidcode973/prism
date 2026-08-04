@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { 
   Menu, X, Play, FolderKanban, Settings, 
   Home, Phone, Info, LogIn, Sparkles, BrainCircuit,
-  LogOut, UserPlus
+  LogOut, UserPlus, History 
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useUser, useClerk } from "@clerk/nextjs";
@@ -62,6 +62,18 @@ function Sidebar({ isSignedIn, onCanvasClick }: { isSignedIn: boolean, onCanvasC
         <div className="flex-1 flex flex-col gap-4 p-4 text-black overflow-hidden">
           <SidebarItem icon={<Home className="shrink-0" />} label="Home Dashboard" isOpen={isOpen} />
           <SidebarItem icon={<FolderKanban className="shrink-0" />} label="Pipeline Canvas" isOpen={isOpen} onClick={onCanvasClick} />
+          
+          {/* 🚀 THE NEW HISTORY LINK 🚀 */}
+          <SidebarItem 
+            icon={<History className="shrink-0" />} 
+            label="History & APIs" 
+            isOpen={isOpen} 
+            onClick={() => {
+              if (!isSignedIn) router.push('/sign-in');
+              else router.push('/history');
+            }} 
+          />
+          
           <SidebarItem icon={<Settings className="shrink-0" />} label="Settings" isOpen={isOpen} />
         </div>
 
@@ -198,7 +210,6 @@ export default function HomePage() {
   const router = useRouter();
   const { isSignedIn, isLoaded } = useUser();
 
-  // Route to canvas
   const handleRestrictedAction = () => {
     if (!isSignedIn) {
       router.push("/sign-in");

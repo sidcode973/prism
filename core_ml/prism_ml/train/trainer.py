@@ -66,7 +66,8 @@ class PrismTrainer:
         df: pl.DataFrame, 
         parameters: Dict[str, Any], 
         raw_data_path: str,
-        run_id: str
+        run_id: str,
+        master_blueprint: Dict[str, Any] = None # Added blueprint access!
     ) -> Tuple[AutoML, str, dict]:
         
         raw_target_col = parameters.get("target_column")
@@ -98,7 +99,6 @@ class PrismTrainer:
         y = pdf[target_col]
         X = pdf.drop(columns=[target_col])
 
-        # Smart Task & Metric Selection (Decoupled checks so metric works even if task is None)
         user_task = parameters.get("task")
         user_metric = parameters.get("metric")
 
@@ -121,19 +121,14 @@ class PrismTrainer:
         parameters["task"] = task
         parameters["metric"] = metric
 
-        # ==========================================
-        # S3 Pathing & Schema Alignment
-        # ==========================================
         test_split_ratio = float(parameters.get("test_split_ratio", 0.0))
         test_dataset_path = parameters.get("test_dataset_path")
-
         is_test_s3 = str(test_dataset_path).startswith("s3://")
 
         if test_dataset_path and (is_test_s3 or os.path.exists(test_dataset_path)):
             print(f"🧪 Evaluating against external test set: {test_dataset_path}")
             X_train, y_train = X, y
             
-            # Secure Cloud Load
             if is_test_s3:
                 fs = self._get_filesystem()
                 with fs.open(test_dataset_path, 'rb') as f:
@@ -142,16 +137,58 @@ class PrismTrainer:
             else:
                 test_df_raw = pl.read_csv(test_dataset_path, ignore_errors=True)
 
-            test_pdf = self._safe_pandas_conversion(test_df_raw, target_col)
+            test_pdf = test_df_raw.to_pandas()
+
+            # ==========================================
+            # 🔮 BULK TEST SET BLUEPRINT TRANSFORMATION
+            # ==========================================
+            print("⚙️ Applying Blueprint Math to External Test Set...")
+            y_test = test_pdf[clean_target] if clean_target in test_pdf.columns else None
             
-            # Align Test Schema to match Engineered Training Schema
-            y_test = test_pdf[target_col] if target_col in test_pdf.columns else None
-            X_test_raw = test_pdf.drop(columns=[target_col]) if target_col in test_pdf.columns else test_pdf
-            X_test_dummies = pd.get_dummies(X_test_raw)
-            
+            if master_blueprint:
+                # 1. Imputations
+                for col, rules in master_blueprint.get("__imputations__", {}).items():
+                    if col in test_pdf.columns:
+                        test_pdf[col] = test_pdf[col].fillna(rules.get("fill_value"))
+
+                # 2. Date Decomposition
+                for col in master_blueprint.get("__date_decompositions__", []):
+                    if col in test_pdf.columns:
+                        dt_series = pd.to_datetime(test_pdf[col], errors='coerce')
+                        test_pdf[f"{col}_year"] = dt_series.dt.year
+                        test_pdf[f"{col}_month"] = dt_series.dt.month
+                        test_pdf[f"{col}_day"] = dt_series.dt.day
+                        test_pdf[f"{col}_dayofweek"] = dt_series.dt.dayofweek
+                        test_pdf = test_pdf.drop(columns=[col])
+
+                # 3. Explicit OHE Mapping
+                for col, allowed_cats in master_blueprint.get("__ohe_mappings__", {}).items():
+                    if col in test_pdf.columns:
+                        for cat in allowed_cats:
+                            test_pdf[f"{col}_{cat}"] = (test_pdf[col].astype(str) == str(cat)).astype(int)
+                        if "Other" in allowed_cats:
+                            test_pdf[f"{col}_Other"] = (~test_pdf[col].astype(str).isin([str(c) for c in allowed_cats])).astype(int)
+                        test_pdf = test_pdf.drop(columns=[col])
+
+                # 4. Feature Scaling
+                scaling = master_blueprint.get("__scaling_params__", {})
+                if scaling.get("method") == "standard":
+                    for col, stats in scaling.get("params", {}).items():
+                        if col in test_pdf.columns:
+                            test_pdf[col] = (pd.to_numeric(test_pdf[col], errors='coerce').fillna(0) - stats["mean"]) / stats["std"]
+                elif scaling.get("method") == "minmax":
+                    for col, stats in scaling.get("params", {}).items():
+                        if col in test_pdf.columns:
+                            rng = stats["max"] - stats["min"] if (stats["max"] - stats["min"]) != 0 else 1.0
+                            test_pdf[col] = (pd.to_numeric(test_pdf[col], errors='coerce').fillna(0) - stats["min"]) / rng
+
+                # 5. Column Rename Mapping
+                rename_map = master_blueprint.get("__column_rename_map__", {})
+                if rename_map:
+                    test_pdf = test_pdf.rename(columns=rename_map)
+
             # Mathematically forces test columns to perfectly match X_train
-            X_test = X_test_dummies.reindex(columns=X_train.columns, fill_value=0)
-            
+            X_test = test_pdf.reindex(columns=X_train.columns, fill_value=0)
             evaluation_mode = "explicit_test_set"
 
         elif test_split_ratio > 0.0 and test_split_ratio < 1.0:
