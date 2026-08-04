@@ -108,8 +108,8 @@ class PrismRouterAgent:
              "auto_purge": true 
              "coerce_types": true 
              "remove_duplicates": true
-             "drop_columns": [] (CRITICAL: DO NOT put Identifiers, Names, or IDs in this list. Leave them alone here.)
-             "impute_rules": {{"ColName": "median"|"mean"|"mode"|"constant_unknown"|"skip"}}
+             "drop_columns": [] 
+             "impute_rules": {{"ColName": "mean"|"median"|"mode"|"<any_custom_string_or_number>"}}
 
         3. "feature_engineer": Use ONLY to mathematically prep data for ML Algorithms.
            - Params:

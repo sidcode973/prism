@@ -1,36 +1,42 @@
+import os
+import sys
+import io
+import json
+import uuid
+import s3fs
+from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, Depends, HTTPException, Security, File, UploadFile, Form
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from typing import List, Dict, Any, Optional
 from jwt import PyJWKClient
 import jwt
-import os
-import json
-import sys
-import io
-import uuid
-import s3fs
 
 # ==========================================
-# ---> OUR NEW INFRASTRUCTURE IMPORTS <---
+# 1. INFRASTRUCTURE & DATABASE IMPORTS
 # ==========================================
 from connections import Base, engine, get_db, get_minio_client
 from models.database_models import DatasetMetadata, PipelineRun, RunStepMetadata
 
 # ==========================================
-# 1. PRISM CORE ML IMPORTS (The Black Box)
+# 2. PRISM CORE ML IMPORTS
 # ==========================================
 core_ml_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core_ml"))
-sys.path.append(core_ml_dir)
-# IGNORE VS CODE PYLANCE WARNINGS HERE. IT WILL RUN PERFECTLY.
+if core_ml_dir not in sys.path:
+    sys.path.append(core_ml_dir)
+
 from prism_ml.profile.profiler import PrismProfiler
-from prism_ml.agent.router import PrismRouterAgent, PipelineContract, RouterResponse
+from prism_ml.agent.router import PrismRouterAgent, RouterResponse
 from prism_ml.orchestrator import PrismDAGExecutor
 
-app = FastAPI()
+# ==========================================
+# 3. CELERY TASK IMPORTS
+# ==========================================
+from celery_worker import execute_pipeline_task
+
+app = FastAPI(title="Prism MLOps Engine", version="2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,7 +65,7 @@ except Exception as e:
     print(f"⚠️ MinIO Bucket Check Failed (is Docker running?): {e}")
 
 # ==========================================
-# 2. THE SECURITY BOUNCER (PROJECT SENTINEL GRADE)
+# SECURITY BOUNCER (PROJECT SENTINEL GRADE)
 # ==========================================
 security = HTTPBearer()
 
@@ -85,26 +91,35 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
 
         user_id = payload.get("sub")
         if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid authentication token: missing sub claim")
+            raise HTTPException(status_code=401, detail="Invalid token: missing sub claim")
 
         return user_id
 
     except jwt.ExpiredSignatureError:
-        print("🔐 JWT Error: Token has expired")
         raise HTTPException(status_code=401, detail="Token has expired")
     except Exception as e:
-        print(f"🔐 JWT Error: {str(e)}")
         raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
 
 # ==========================================
-# 3. INITIALIZE THE ML ENGINE
+# INITIALIZE CORE ENGINES
 # ==========================================
 profiler = PrismProfiler()
 agent = PrismRouterAgent()
 executor = PrismDAGExecutor()
 
+def get_s3_fs():
+    s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
+    s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
+    s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
+    
+    return s3fs.S3FileSystem(
+        client_kwargs={'endpoint_url': s3_endpoint},
+        key=s3_key,
+        secret=s3_secret
+    )
+
 # ==========================================
-# 4. SECURE CLOUD DATASETS ENDPOINTS
+# DATASET ENDPOINTS
 # ==========================================
 @app.get("/api/datasets")
 async def get_datasets(current_user_id: str = Depends(verify_token), db: Session = Depends(get_db)):
@@ -118,7 +133,6 @@ async def upload_dataset(
     db: Session = Depends(get_db)
 ):
     print(f"📥 Receiving file '{file.filename}' from user: {current_user_id}")
-    
     try:
         file_bytes = await file.read()
         file_size = len(file_bytes)
@@ -134,7 +148,6 @@ async def upload_dataset(
             length=file_size,
             content_type=file.content_type
         )
-        print(f"☁️ Saved securely to MinIO Cloud: {minio_path}")
 
         new_dataset = DatasetMetadata(
             id=dataset_id,
@@ -145,7 +158,6 @@ async def upload_dataset(
         )
         db.add(new_dataset)
         db.commit()
-        print("💾 Logged dataset metadata into PostgreSQL!")
 
         return {"status": "success", "dataset_id": dataset_id, "file_name": file.filename}
         
@@ -153,27 +165,48 @@ async def upload_dataset(
         db.rollback() 
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-# ==========================================
-# 5. THE AI ROUTER ENDPOINT (POSTGRES LOGGED)
-# ==========================================
-import json
-from typing import Optional
-from fastapi import Form, Depends, HTTPException
-# Ensure you have 'json' and 'Optional' imported at the top of your file!
+@app.get("/api/datasets/{dataset_id}/columns")
+async def get_dataset_columns(
+    dataset_id: str, 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    dataset = db.query(DatasetMetadata).filter(
+        DatasetMetadata.id == dataset_id, 
+        DatasetMetadata.user_id == current_user_id
+    ).first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+        
+    fs = get_s3_fs()
+    s3_path = f"s3://{BUCKET_NAME}/{dataset.minio_path}"
+    
+    try:
+        with fs.open(s3_path, 'r', encoding='utf-8', errors='ignore') as f:
+            first_line = f.readline()
+            import re
+            columns = [c.strip('"\n\r ') for c in re.split(r',|;|\||\t', first_line)]
+            columns = [c for c in columns if c] 
+            
+        return {"columns": columns}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read dataset schema: {str(e)}")
 
+# ==========================================
+# RUN PIPELINE ENDPOINT (THE HYBRID OVERRIDE)
+# ==========================================
 @app.post("/api/run-pipeline")
 async def run_pipeline(
     dataset_id: str = Form(...),
     prompt: str = Form(...),
-    manual_nodes: Optional[str] = Form(None), # <--- THE FIX: Accept the frontend data
-    manual_edges: Optional[str] = Form(None), # <--- THE FIX: Accept the frontend data
+    manual_nodes: Optional[str] = Form(None),
+    manual_edges: Optional[str] = Form(None),
+    async_mode: bool = Form(False),
     current_user_id: str = Depends(verify_token),
     db: Session = Depends(get_db)
 ):
-    print("\n" + "="*50)
-    print(f"🔒 SECURE AI REQUEST GRANTED FOR USER: {current_user_id}")
-    print("="*50)
-
     dataset_record = db.query(DatasetMetadata).filter(
         DatasetMetadata.user_id == current_user_id, 
         DatasetMetadata.id == dataset_id
@@ -184,154 +217,206 @@ async def run_pipeline(
 
     file_name = dataset_record.file_name
     file_path = f"s3://{BUCKET_NAME}/{dataset_record.minio_path}"
+    master_run_id = uuid.uuid4().hex[:8]
     
     pipeline_run = PipelineRun(
+        id=master_run_id,
         user_id=current_user_id,
         dataset_id=dataset_id,
         status="running"
     )
     db.add(pipeline_run)
     db.commit()
-    db.refresh(pipeline_run)
 
-    # ---------------------------------------------------------
-    # THE BRIDGE: Inject the Manual Canvas State into Llama 3
-    # ---------------------------------------------------------
+    base_prompt = prompt.strip()
     manual_context = ""
+    
     if manual_nodes:
+        # Prevent the LLM from throwing the "No pipeline actions" error
+        if not base_prompt:
+            base_prompt = "Adopt my manual canvas state exactly. Auto-complete any missing mathematical parameters optimally based on the schema profile. DO NOT reject."
+            
         try:
-            # We parse them just to ensure they are valid JSON
             parsed_nodes = json.loads(manual_nodes)
             parsed_edges = json.loads(manual_edges) if manual_edges else []
-            
-            print(f"📥 Received {len(parsed_nodes)} manual nodes from frontend canvas.")
-            
-            # Inject them directly into the LLM's brain
-            manual_context = f"""
-            
-            [USER MANUAL CANVAS STATE]:
-            The user has already dragged nodes onto their canvas. You MUST include these exact nodes in your final execution plan.
-            If they left a parameter blank, use your expertise to fill in the best mathematical approach.
-            Nodes: {json.dumps(parsed_nodes)}
-            Edges: {json.dumps(parsed_edges)}
-            """
+            manual_context = f"\n[USER MANUAL CANVAS STATE]:\nNodes: {json.dumps(parsed_nodes)}\nEdges: {json.dumps(parsed_edges)}\n"
         except json.JSONDecodeError:
-            print("⚠️ Failed to parse manual_nodes JSON.")
+            pass
 
-
-    backend_enforced_prompt = prompt + manual_context + """
-    
+    backend_enforced_prompt = base_prompt + manual_context + """
     [URGENT SYSTEM OVERRIDE RULES]:
-    1. Your action_type MUST strictly be one of: fix_csv, clean_data, feature_engineer, generate_plot, train_model.
-    2. If the user asks to train a model, you MUST inject 'feature_engineer' before 'train_model'.
-    3. Inside the 'train_model' and 'feature_engineer' parameters, you MUST include 'target_column' with the exact name of the column to predict.
+    1. Action types must strictly be: fix_csv, clean_data, feature_engineer, generate_plot, train_model.
+    2. Include 'target_column' ONLY IF 'train_model' or 'feature_engineer' is present.
+    3. NEVER reject a request if [USER MANUAL CANVAS STATE] is provided.
     """
 
     try:
-        print(f"🔍 Profiling data using Profiler Engine directly from {file_path}...")
         profile = profiler.generate_profile(file_path)
-        
-        print("🧠 Asking Llama 3 to generate DAG Contract...")
         contract_str = agent.generate_contract(
             user_prompt=backend_enforced_prompt, 
             user_id=current_user_id, 
-            project_id=str(pipeline_run.id),
+            project_id=master_run_id,
             file_name=file_name, 
             data_profile=profile
         )
         
-        try:
-            clean_str = contract_str.replace("```json", "").replace("```", "").strip()
-            raw_json = json.loads(clean_str)
-            validated_response = RouterResponse(**raw_json)
-            print("🛡️ AI Contract passed Pydantic validation!")
-        except Exception as ve:
-            pipeline_run.status = "failed"
-            db.commit()
-            raise HTTPException(status_code=502, detail=f"Llama 3 returned invalid format: {ve}")
+        clean_str = contract_str.replace("```json", "").replace("```", "").strip()
+        raw_json = json.loads(clean_str)
+        validated_response = RouterResponse(**raw_json)
 
         if validated_response.status == "error":
-            print(f"🛑 LLM ABORTED PIPELINE: {validated_response.rejection_reason}")
             pipeline_run.status = "failed"
             db.commit()
             return {
+                "run_id": master_run_id,
                 "dag_structure": None,
-                "execution_results": {
-                    "status": "warning", 
-                    "message": validated_response.rejection_reason
-                }
+                "execution_results": {"status": "warning", "message": validated_response.rejection_reason}
             }
 
-        print("⚙️ Executing Graph via Orchestrator...")
-        final_response = executor.execute_graph(validated_response.pipeline.model_dump(), file_path)
-        
-        ml_metadata = final_response.get("results", {}).get("metadata", {})
-        if ml_metadata:
-            step_meta = RunStepMetadata(
-                run_id=pipeline_run.id,
-                node_id="system_aggregated_metadata",
-                node_type="metadata",
-                metadata_json=ml_metadata
-            )
-            db.add(step_meta)
-            
-        pipeline_run.status = "success" if final_response.get("status") == "success" else "failed"
-        db.commit()
+        contract_dict = validated_response.pipeline.model_dump()
 
-        print("✅ Pipeline complete! Handing off to Frontend.")
-        return {
-            "dag_structure": validated_response.pipeline.model_dump(),
-            "execution_results": final_response,
-            "run_id": str(pipeline_run.id)
-        }
-        
-    except HTTPException as he:
-        pipeline_run.status = "failed"
-        db.commit()
-        raise he
+        # 🛡️ THE HYBRID CANVAS OVERRIDE 🛡️
+        # We let the AI generate smart defaults (like impute_rules), but we force-merge
+        # your explicit UI settings on top of them, and lock the graph topology to match the canvas.
+        if manual_nodes:
+            try:
+                # 1. Group LLM parameters by action_type
+                llm_params_by_type = {}
+                for llm_node in contract_dict.get("nodes", []):
+                    l_type = llm_node["action_type"]
+                    if l_type not in llm_params_by_type:
+                        llm_params_by_type[l_type] = []
+                    llm_params_by_type[l_type].append(llm_node.get("parameters", {}))
+                    
+                # 2. Rebuild Final Nodes from Manual Canvas
+                final_nodes = []
+                type_counters = {}
+                for man_node in parsed_nodes:
+                    m_type = man_node["data"]["action_type"]
+                    if m_type not in type_counters: type_counters[m_type] = 0
+                    idx = type_counters[m_type]
+                    
+                    # Start with LLM's smart defaults (if available)
+                    final_params = {}
+                    if m_type in llm_params_by_type and idx < len(llm_params_by_type[m_type]):
+                        final_params = dict(llm_params_by_type[m_type][idx])
+                        
+                    # Hardcoded fallback just in case LLM misses it
+                    if m_type == "generate_plot" and "chart_type" not in final_params:
+                        final_params["chart_type"] = "scatter"
+                        
+                    # Override with user explicit config from UI
+                    user_config = man_node["data"].get("config", {})
+                    for k, v in user_config.items():
+                        if v != "" and v is not None:
+                            final_params[k] = v
+                            
+                    final_nodes.append({
+                        "node_id": man_node["id"],
+                        "action_type": m_type,
+                        "parameters": final_params
+                    })
+                    type_counters[m_type] += 1
+                    
+                # 3. Topological Sort for execution order based purely on UI edges
+                adj = {n["id"]: [] for n in parsed_nodes}
+                in_degree = {n["id"]: 0 for n in parsed_nodes}
+                for edge in parsed_edges:
+                    src = edge.get("source")
+                    tgt = edge.get("target")
+                    if src in adj and tgt in in_degree:
+                        adj[src].append(tgt)
+                        in_degree[tgt] += 1
+                        
+                from collections import deque
+                queue = deque([n for n in in_degree if in_degree[n] == 0])
+                exec_order = []
+                while queue:
+                    curr = queue.popleft()
+                    exec_order.append(curr)
+                    for nbr in adj[curr]:
+                        in_degree[nbr] -= 1
+                        if in_degree[nbr] == 0:
+                            queue.append(nbr)
+                            
+                # Failsafe if the graph is disconnected
+                if len(exec_order) != len(parsed_nodes):
+                    exec_order = [n["id"] for n in parsed_nodes]
+                    
+                contract_dict["nodes"] = final_nodes
+                contract_dict["execution_order"] = exec_order
+                print("🛡️ Hybrid Override Complete: Merged AI Smarts with Manual UI Structure.")
+            except Exception as e:
+                print(f"⚠️ Hybrid canvas override failed: {e}")
+
+        # Map test dataset paths if training model
+        for node in contract_dict.get("nodes", []):
+            if node["action_type"] == "train_model":
+                test_id = node["parameters"].get("test_dataset_id")
+                if test_id:
+                    test_record = db.query(DatasetMetadata).filter(DatasetMetadata.id == test_id).first()
+                    if test_record:
+                        node["parameters"]["test_dataset_path"] = f"s3://{BUCKET_NAME}/{test_record.minio_path}"
+
+        if async_mode:
+            print(f"⚡ Dispatching Run {master_run_id} to Celery Task Queue...")
+            execute_pipeline_task.delay(contract_dict, file_path, master_run_id, current_user_id)
+            return {
+                "status": "queued",
+                "message": "Pipeline execution queued asynchronously.",
+                "run_id": master_run_id
+            }
+        else:
+            print(f"⚙️ Executing Graph Inline for Run {master_run_id}...")
+            final_response = executor.execute_graph(contract_dict, file_path, master_run_id)
+            
+            results = final_response.get("results", {})
+            raw_loss = results.get("loss")
+            safe_loss = float(raw_loss) if raw_loss is not None else None
+            
+            pipeline_run.status = "success" if final_response.get("status") == "success" else "failed"
+            pipeline_run.best_model_name = results.get("best_model")
+            pipeline_run.task_type = results.get("task_type")
+            pipeline_run.optimization_metric = results.get("optimization_metric")
+            pipeline_run.final_score = safe_loss
+            pipeline_run.blueprint_path = results.get("blueprint_path")
+            pipeline_run.model_artifact_path = results.get("trained_model_path")
+            pipeline_run.completed_at = func.now()
+            
+            db.commit()
+
+            return {
+                "run_id": master_run_id,
+                "dag_structure": contract_dict,
+                "execution_results": final_response
+            }
+
     except Exception as e:
         pipeline_run.status = "failed"
         db.commit()
-        print(f"❌ Core ML Engine Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Engine Failure: {str(e)}")
-# ==========================================
-# 6. SECURE CLOUD DOWNLOAD ENDPOINTS
-# ==========================================
-def get_s3_fs():
-    s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
-    s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
-    s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
-    
-    return s3fs.S3FileSystem(
-        client_kwargs={'endpoint_url': s3_endpoint},
-        key=s3_key,
-        secret=s3_secret
-    )
+        raise HTTPException(status_code=500, detail=f"Engine Execution Failure: {str(e)}")
 
-def _get_mod_time(file_info: dict):
-    return file_info.get('LastModified') or file_info.get('last_modified') or 0
-
+# ==========================================
+# SECURE RUN-ISOLATED DOWNLOAD ENDPOINTS
+# ==========================================
 @app.get("/api/download-model")
-async def download_model(current_user_id: str = Depends(verify_token), db: Session = Depends(get_db)):
+async def download_model(
+    run_id: str, 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run or not run.model_artifact_path:
+        raise HTTPException(status_code=404, detail=f"No trained model found for Run ID: {run_id}")
+
     fs = get_s3_fs()
-    
-    # THE FIX: Search the ENTIRE user directory recursively to prevent pathing mismatches
-    bucket_path = f"{BUCKET_NAME}/{current_user_id}"
-    
-    try:
-        all_files = fs.find(bucket_path, detail=True)
-    except FileNotFoundError:
-        all_files = {}
+    s3_path = run.model_artifact_path if run.model_artifact_path.startswith("s3://") else f"s3://{run.model_artifact_path}"
 
     try:
-        model_files = [info for path, info in all_files.items() if path.endswith('.pkl')]
-        
-        if not model_files:
-            raise HTTPException(status_code=404, detail="No trained model found. You must run a pipeline with 'Train Model' first.")
-            
-        latest_file = max(model_files, key=_get_mod_time)
-        s3_path = f"s3://{latest_file['name']}"
-        
         def iterfile():
             with fs.open(s3_path, "rb") as f:
                 yield from f
@@ -339,58 +424,57 @@ async def download_model(current_user_id: str = Depends(verify_token), db: Sessi
         return StreamingResponse(
             iterfile(), 
             media_type='application/octet-stream', 
-            headers={"Content-Disposition": 'attachment; filename="prism_ai_model.pkl"'}
+            headers={"Content-Disposition": f'attachment; filename="prism_model_{run_id}.pkl"'}
         )
-    except HTTPException as he:
-        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model Download Error: {str(e)}")
 
 @app.get("/api/download-csv")
-async def download_csv(stage: str, current_user_id: str = Depends(verify_token), db: Session = Depends(get_db)):
+async def download_csv(
+    stage: str, 
+    run_id: str,
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run ID '{run_id}' not found.")
+
+    stage_map = {
+        "fixed": f"structurally_fixed_{run_id}.csv",
+        "cleaned": f"cleaned_dataset_{run_id}.csv",
+        "engineered": f"engineered_dataset_{run_id}.csv"
+    }
+
+    if stage not in stage_map:
+        raise HTTPException(status_code=400, detail="Invalid stage. Use 'fixed', 'cleaned', or 'engineered'.")
+
+    target_filename = stage_map[stage]
+    dataset = db.query(DatasetMetadata).filter(DatasetMetadata.id == run.dataset_id).first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Associated dataset record missing.")
+
+    dataset_dir = "/".join(dataset.minio_path.split("/")[:-1])
+    full_s3_path = f"s3://{BUCKET_NAME}/{dataset_dir}/{target_filename}"
+
     fs = get_s3_fs()
-    
-    # THE FIX: Search the ENTIRE user directory recursively to prevent pathing mismatches
-    bucket_path = f"{BUCKET_NAME}/{current_user_id}"
-    
-    try:
-        all_files = fs.find(bucket_path, detail=True)
-    except FileNotFoundError:
-        all_files = {}
+    if not fs.exists(full_s3_path):
+        raise HTTPException(status_code=404, detail=f"No '{stage}' dataset artifact found for Run ID: {run_id}")
 
     try:
-        stage_map = {
-            "fixed": "structurally_fixed",
-            "cleaned": "cleaned_dataset",
-            "engineered": "engineered_dataset"
-        }
-        
-        if stage not in stage_map:
-            raise HTTPException(status_code=400, detail="Invalid stage. Use 'fixed', 'cleaned', or 'engineered'.")
-            
-        file_tag = stage_map[stage]
-        
-        generated_files = [
-            info for path, info in all_files.items()
-            if path.endswith('.csv') and file_tag in path
-        ]
-        
-        if not generated_files:
-            raise HTTPException(status_code=404, detail=f"No '{stage}' dataset found. The pipeline may not have executed this step.")
-            
-        latest_file = max(generated_files, key=_get_mod_time)
-        s3_path = f"s3://{latest_file['name']}"
-        
         def iterfile():
-            with fs.open(s3_path, "rb") as f:
+            with fs.open(full_s3_path, "rb") as f:
                 yield from f
                 
         return StreamingResponse(
             iterfile(), 
             media_type='text/csv', 
-            headers={"Content-Disposition": f'attachment; filename="prism_{stage}_data.csv"'}
+            headers={"Content-Disposition": f'attachment; filename="prism_{stage}_{run_id}.csv"'}
         )
-    except HTTPException as he:
-        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSV Download Error: {str(e)}")

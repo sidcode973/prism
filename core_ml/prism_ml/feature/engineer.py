@@ -1,5 +1,5 @@
 import polars as pl
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 import os
 import uuid
 import s3fs
@@ -14,17 +14,8 @@ class PrismEngineer:
         self.s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
         self.s3_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
         self.s3_secret = os.getenv("MINIO_SECRET_KEY", "prismpassword")
-        
-        self.storage_options = {
-            "aws_endpoint_url": self.s3_endpoint,
-            "aws_access_key_id": self.s3_key,
-            "aws_secret_access_key": self.s3_secret,
-            "aws_region": "us-east-1",
-            "aws_allow_http": "true" 
-        }
 
     def _get_filesystem(self, is_s3: bool):
-        """Returns the appropriate filesystem client for writing."""
         if is_s3:
             return s3fs.S3FileSystem(
                 client_kwargs={'endpoint_url': self.s3_endpoint},
@@ -33,16 +24,14 @@ class PrismEngineer:
             )
         return None
 
-    def execute_engineering(self, node_id: str, file_path: str, parameters: Dict[str, Any]) -> tuple[pl.DataFrame, str]:
+    def execute_engineering(self, node_id: str, file_path: str, parameters: Dict[str, Any], run_id: str) -> Tuple[pl.DataFrame, str, dict]:
         print(f"📥 Loading dataset for feature engineering from: {file_path}")
         
         is_s3 = file_path.startswith("s3://")
         
         try:
-            # I/O Abstraction for Reading
             read_kwargs = {"ignore_errors": True}
             
-            # Decapitate Polars' S3 engine. Read bytes natively via s3fs.
             if is_s3:
                 fs = self._get_filesystem(is_s3=True)
                 with fs.open(file_path, 'rb') as f:
@@ -57,7 +46,17 @@ class PrismEngineer:
         if not parameters:
             raise ValueError(f"Node {node_id}: Parameters cannot be empty.")
 
-        # Safely extract the exact target column, ignoring LLM hallucinated spaces
+        # Extract existing blueprint or start a fresh dictionary
+        blueprint = parameters.get("column_roles", {})
+        
+        # Initialize Engineering Blueprint Sections
+        blueprint["__engineered_dropped_columns__"] = []
+        blueprint["__date_decompositions__"] = []
+        blueprint["__ohe_mappings__"] = {}
+        blueprint["__scaling_params__"] = {}
+        blueprint["__column_rename_map__"] = {}
+
+        # Safely extract target column
         target_col = parameters.get("target_column")
         if target_col:
             target_col = target_col.strip()
@@ -66,51 +65,68 @@ class PrismEngineer:
                     target_col = col
                     break
 
-        column_roles = parameters.get("column_roles", {})
         exclude_cols = parameters.get("exclude_columns", [])
 
         # ==========================================
         # 1. THE PRE-EMPTIVE PURGE
-        # Moved to Step 1: Guarantees raw text, IDs, and excluded columns 
-        # never make it into the downstream math engines.
         # ==========================================
         cols_to_drop = []
         for col in df.columns:
-            if (column_roles.get(col) == "identifier" or col in exclude_cols) and col != target_col:
+            if (blueprint.get(col) == "identifier" or col in exclude_cols) and col != target_col:
                 cols_to_drop.append(col)
                 
         if cols_to_drop:
             print(f"🗑️ Purging non-predictive columns from ML Matrix: {cols_to_drop}")
             df = df.drop(cols_to_drop, strict=False)
+            blueprint["__engineered_dropped_columns__"].extend(cols_to_drop)
 
-        # 2. DECOMPOSE DATES (Convert strings to actionable ML numeric features)
-        df = self._decompose_dates(df, column_roles)
+        # ==========================================
+        # 2. DECOMPOSE DATES
+        # ==========================================
+        df = self._decompose_dates(df, blueprint)
 
-        # 3. ENCODE CATEGORICALS (One-Hot Encoding, strictly bypassing identifiers)
-        if parameters.get("encode_categoricals", True):
-            df = self._apply_one_hot_encoding(df, target_col, column_roles)
+        # ==========================================
+        # 3. ENCODE CATEGORICALS (OHE)
+        # ==========================================
+        # Safely parse boolean flag from string or bool
+        encode_param = parameters.get("encode_categoricals", True)
+        encode_flag = str(encode_param).lower() == "true" if isinstance(encode_param, str) else bool(encode_param)
+        manual_cols = parameters.get("manual_encode_cols", [])
 
-        # Convert to LazyFrame for mathematical scaling
+        if encode_flag or manual_cols:
+            df = self._apply_one_hot_encoding(df, target_col, blueprint, encode_flag, manual_cols)
+
+        # Switch to Lazy Engine for Scaling & Final Collection
         lazy_df = df.lazy()
 
+        # ==========================================
         # 4. FEATURE SCALING
+        # ==========================================
         scale_method = parameters.get("scale_method", "none").lower()
         if scale_method in ["standard", "minmax"]:
-            lazy_df = self._apply_scaling(lazy_df, scale_method, target_col, column_roles)
+            lazy_df = self._apply_scaling(lazy_df, scale_method, target_col, blueprint)
 
         print("⚙️ Executing Feature Engineering Math via Polars Streaming...")
         try:
             engineered_df = lazy_df.collect(streaming=True)
             
-            # THE PROFESSIONAL APPROACH: Data Schema Governance
-            # Clean all column names to be strictly alphanumeric + underscores to prevent ML engine crashes
-            safe_columns = [re.sub(r'[^a-zA-Z0-9_]', '_', col) for col in engineered_df.columns]
-            engineered_df = engineered_df.rename(dict(zip(engineered_df.columns, safe_columns)))
+            # Data Schema Governance: Clean column names for ML compatibility
+            orig_cols = list(engineered_df.columns)
+            safe_columns = [re.sub(r'[^a-zA-Z0-9_]', '_', col) for col in orig_cols]
+            
+            rename_map = dict(zip(orig_cols, safe_columns))
+            blueprint["__column_rename_map__"] = rename_map
+            engineered_df = engineered_df.rename(rename_map)
+            
+            # Save final column order for prediction inputs
+            blueprint["__final_ml_matrix_columns__"] = list(engineered_df.columns)
+            if target_col in rename_map:
+                blueprint["__final_target_column__"] = rename_map[target_col]
+            else:
+                blueprint["__final_target_column__"] = target_col
             
             print(f"✅ Feature Engineering complete. Final ML Matrix shape: {engineered_df.shape}")
             
-            # I/O Abstraction for Writing
-            run_id = uuid.uuid4().hex[:8]
             
             if is_s3:
                 directory = "/".join(file_path.split("/")[:-1])
@@ -125,7 +141,7 @@ class PrismEngineer:
                 engineered_df.write_csv(save_path)
             
             print(f"💾 ML-ready matrix safely handed off to disk/cloud at: {save_path}")
-            return engineered_df, save_path
+            return engineered_df, save_path, blueprint
             
         except Exception as e:
             raise ValueError(f"Node {node_id}: Engineering execution failed: {e}")
@@ -134,15 +150,13 @@ class PrismEngineer:
     # MATHEMATICAL TRANSFORMERS
     # ==========================================
 
-    def _decompose_dates(self, df: pl.DataFrame, column_roles: dict) -> pl.DataFrame:
-        """Professionally breaks Date columns into Year/Month/Day numeric features."""
-        date_cols = [col for col, role in column_roles.items() if role == "date" and col in df.columns]
+    def _decompose_dates(self, df: pl.DataFrame, blueprint: dict) -> pl.DataFrame:
+        date_cols = [col for col, role in blueprint.items() if role == "date" and col in df.columns]
         if not date_cols:
             return df
         
         print(f"📅 Decomposing Date features into ML-ready numeric columns: {date_cols}")
         
-        # Pandas `to_datetime` is industry-standard for fuzzy format inference
         pdf = df.to_pandas()
         for col in date_cols:
             pdf[col] = pd.to_datetime(pdf[col], errors='coerce')
@@ -150,19 +164,23 @@ class PrismEngineer:
             pdf[f"{col}_month"] = pdf[col].dt.month
             pdf[f"{col}_day"] = pdf[col].dt.day
             pdf[f"{col}_dayofweek"] = pdf[col].dt.dayofweek
-            pdf = pdf.drop(columns=[col]) # Drop the original datetime object
+            pdf = pdf.drop(columns=[col])
+            
+            blueprint["__date_decompositions__"].append(col)
             
         return pl.from_pandas(pdf)
 
-    def _apply_one_hot_encoding(self, df: pl.DataFrame, target_col: str, column_roles: dict) -> pl.DataFrame:
-        """Finds string columns, applies Smart OHE (skips identifiers, free-text, lumps high cardinality)."""
-        # Strictly ignore target column AND detected dates (Identifiers are already purged)
-        string_cols = [
-            col for col, dtype in df.schema.items() 
-            if dtype == pl.Utf8 
-            and col != target_col 
-            and column_roles.get(col) not in ["date"]
-        ]
+    def _apply_one_hot_encoding(self, df: pl.DataFrame, target_col: str, blueprint: dict, auto_encode: bool, manual_cols: list) -> pl.DataFrame:
+        # Respect manual string columns if auto_encode is disabled
+        if auto_encode:
+            string_cols = [
+                col for col, dtype in df.schema.items() 
+                if dtype == pl.Utf8 
+                and col != target_col 
+                and blueprint.get(col) not in ["date"]
+            ]
+        else:
+            string_cols = [col for col in manual_cols if col in df.columns]
         
         if not string_cols:
             return df
@@ -171,28 +189,23 @@ class PrismEngineer:
         cols_to_drop = []
         
         for col in string_cols:
-            # 1. Free-Text Detection: Skip if average string length is > 40 characters
             avg_len = df.select(pl.col(col).str.len_chars().mean()).item()
             if avg_len is not None and avg_len > 40:
-                print(f"⏩ Skipping OHE for '{col}': Detected as free-text (Avg length {avg_len:.1f}).")
+                print(f"⏩ Skipping OHE for '{col}': Free-text detected.")
                 cols_to_drop.append(col)
                 continue
                 
-            # 2. THE MATRIX SHIELD: Fallback Uniqueness Check
-            # If > 40% of the column is unique, it's an uncaught ID/Name. Drop it to prevent OHE explosion.
             non_null_count = df.height - df[col].null_count()
             if non_null_count > 10:
                 unique_count = df[col].n_unique()
                 if (unique_count / non_null_count) > 0.40:
-                    print(f"🛡️ FAILSAFE: '{col}' has {unique_count/non_null_count:.1%} uniqueness. Purging to prevent Matrix explosion.")
+                    print(f"🛡️ FAILSAFE: '{col}' high uniqueness. Purging.")
                     cols_to_drop.append(col)
                     continue
 
-            # 3. Top-K Lumping for High Cardinality (Safe categories with < 40% uniqueness)
             unique_count = df[col].n_unique()
             if unique_count > 15:
-                print(f"🗜️ High cardinality in '{col}' ({unique_count} unique). Lumping into Top 15 + 'Other'.")
-                
+                print(f"🗜️ High cardinality in '{col}'. Lumping into Top 15 + 'Other'.")
                 top_15 = (
                     df.group_by(col)
                     .agg(pl.len().alias("count"))
@@ -201,31 +214,32 @@ class PrismEngineer:
                     .get_column(col)
                     .to_list()
                 )
-                
                 df = df.with_columns(
                     pl.when(pl.col(col).is_in(top_15))
                     .then(pl.col(col))
                     .otherwise(pl.lit("Other"))
                     .alias(col)
                 )
-            
+                blueprint["__ohe_mappings__"][col] = top_15
+            else:
+                categories = df.get_column(col).drop_nulls().unique().to_list()
+                blueprint["__ohe_mappings__"][col] = categories
+
             cols_to_encode.append(col)
             
         if cols_to_drop:
             df = df.drop(cols_to_drop)
+            blueprint["__engineered_dropped_columns__"].extend(cols_to_drop)
 
         if cols_to_encode:
             print(f"🔥 One-Hot Encoding refined categorical columns: {cols_to_encode}")
-            # drop_first=True prevents the Dummy Variable Trap (Multicollinearity)
-            df = df.to_dummies(columns=cols_to_encode, drop_first=True)
+            # ---> THE FIX: Changed drop_first=True to drop_first=False <---
+            df = df.to_dummies(columns=cols_to_encode, drop_first=False)
             
         return df
 
-    def _apply_scaling(self, lazy_df: pl.LazyFrame, method: str, target_col: str, column_roles: dict) -> pl.LazyFrame:
-        """Applies Standard (Z-score) or Min-Max scaling to numerical features."""
+    def _apply_scaling(self, lazy_df: pl.LazyFrame, method: str, target_col: str, blueprint: dict) -> pl.LazyFrame:
         schema = lazy_df.collect_schema()
-        
-        # Identifiers and Excludes are already purged, so we just grab math columns
         numeric_cols = [
             col for col, dtype in schema.items() 
             if dtype in [pl.Int64, pl.Int32, pl.Float64, pl.Float32] 
@@ -236,18 +250,43 @@ class PrismEngineer:
             return lazy_df
 
         print(f"📏 Applying '{method}' scaling to numerical features.")
-        exprs = []
         
+        # Parallel Lazy Aggregation pass to compute scaling parameters
+        agg_exprs = []
         if method == "standard":
             for col in numeric_cols:
-                exprs.append(
-                    ((pl.col(col) - pl.col(col).mean()) / pl.col(col).std()).alias(col)
-                )
+                agg_exprs.append(pl.col(col).mean().alias(f"{col}_mean"))
+                agg_exprs.append(pl.col(col).std().alias(f"{col}_std"))
         elif method == "minmax":
             for col in numeric_cols:
-                exprs.append(
-                    ((pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())).alias(col)
-                )
+                agg_exprs.append(pl.col(col).min().alias(f"{col}_min"))
+                agg_exprs.append(pl.col(col).max().alias(f"{col}_max"))
+
+        scale_stats = lazy_df.select(agg_exprs).collect().to_dicts()[0]
+        
+        exprs = []
+        scaling_blueprint = {"method": method, "params": {}}
+
+        if method == "standard":
+            for col in numeric_cols:
+                mean_val = scale_stats.get(f"{col}_mean") or 0.0
+                std_val = scale_stats.get(f"{col}_std") or 1.0
+                if std_val == 0.0: std_val = 1.0
+                
+                scaling_blueprint["params"][col] = {"mean": mean_val, "std": std_val}
+                exprs.append(((pl.col(col) - pl.lit(mean_val)) / pl.lit(std_val)).alias(col))
+
+        elif method == "minmax":
+            for col in numeric_cols:
+                min_val = scale_stats.get(f"{col}_min") or 0.0
+                max_val = scale_stats.get(f"{col}_max") or 1.0
+                range_val = max_val - min_val
+                if range_val == 0.0: range_val = 1.0
+                
+                scaling_blueprint["params"][col] = {"min": min_val, "max": max_val}
+                exprs.append(((pl.col(col) - pl.lit(min_val)) / pl.lit(range_val)).alias(col))
+
+        blueprint["__scaling_params__"] = scaling_blueprint
 
         if exprs:
             lazy_df = lazy_df.with_columns(exprs)

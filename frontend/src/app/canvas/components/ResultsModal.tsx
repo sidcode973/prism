@@ -9,7 +9,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   const [chartIndex, setChartIndex] = useState(0);
   const { getToken } = useAuth(); 
 
-  // ---> THE FIX 1: Reset the chart index to 0 every time the modal opens or new results come in!
   useEffect(() => {
     setChartIndex(0);
   }, [pipelineResult, isOpen]);
@@ -17,10 +16,11 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   if (!isOpen || !pipelineResult) return null;
 
   const charts = pipelineResult.charts || [];
-  
-  // ---> THE FIX 2: A safety net. If chartIndex is ever somehow larger than the array, force it to 0.
   const safeIndex = chartIndex >= charts.length ? 0 : chartIndex;
   const currentChart = charts[safeIndex];
+
+  // Extract the run_id from the backend response!
+  const runId = pipelineResult.run_id;
 
   // ==========================================
   // THE SCORE FIX
@@ -38,10 +38,16 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   const displayScore = numericScore !== "N/A" ? `${metricName}: ${numericScore}` : "Check charts for details.";
 
   const handleDownloadCSV = async (stage: string) => {
+    if (!runId) {
+      alert("⚠️ Cannot download: Run ID is missing from the results.");
+      return;
+    }
+
     try {
       const token = await getToken();
       
-      const response = await fetch(`http://localhost:8000/api/download-csv?stage=${stage}&t=${Date.now()}`, {
+      // Injecting the run_id into the secure API call
+      const response = await fetch(`http://localhost:8000/api/download-csv?stage=${stage}&run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       
@@ -71,10 +77,16 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   };
   
   const handleDownloadModel = async () => {
+    if (!runId) {
+      alert("⚠️ Cannot download: Run ID is missing from the results.");
+      return;
+    }
+
     try {
       const token = await getToken();
       
-      const response = await fetch(`http://localhost:8000/api/download-model?t=${Date.now()}`, {
+      // Injecting the run_id into the secure API call
+      const response = await fetch(`http://localhost:8000/api/download-model?run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       
@@ -88,7 +100,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = "prism_ai_model.pkl";
+      a.download = `prism_ai_model_${runId}.pkl`;
       document.body.appendChild(a);
       a.click();
       
@@ -106,7 +118,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   return (
     <div className="fixed inset-0 z-[9999] bg-[#fdfaf5] flex flex-col overflow-hidden">
       
-      {/* HEADER: Tightened height to save vertical space */}
       <div className="h-16 lg:h-20 border-b-4 border-black px-4 lg:px-6 flex items-center justify-between shrink-0 bg-yellow-300">
         <h2 className="text-xl lg:text-3xl font-black uppercase flex items-center gap-3">
           <BarChart3 size={28} /> Pipeline Analysis
@@ -119,10 +130,8 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
         </button>
       </div>
 
-      {/* BODY */}
       <div className="flex-1 flex flex-col lg:flex-row h-full overflow-hidden">
         
-        {/* LEFT PANEL: Reduced width to 350px, reduced padding to p-5 to prevent squishing */}
         <div className="w-full lg:w-[350px] border-b-4 lg:border-b-0 lg:border-r-4 border-black p-5 flex flex-col gap-6 bg-white shrink-0 overflow-y-auto">
           <div>
             <h3 className="font-black text-lg text-gray-400 uppercase mb-2">Outcome</h3>
@@ -165,7 +174,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
               </button>
             </div>
 
-            {/* MODEL DOWNLOAD BUTTON */}
             {pipelineResult.hasModel || pipelineResult.best_model ? (
               <button 
                 onClick={handleDownloadModel}
@@ -182,11 +190,9 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
           </div>
         </div>
 
-        {/* RIGHT PANEL: Reduced outer padding so the graph has more room to breathe */}
         <div className="flex-1 p-4 lg:p-6 flex flex-col relative bg-gray-50 h-full overflow-hidden">
           {charts.length > 0 ? (
             <>
-              {/* Carousel Controls */}
               <div className="flex items-center justify-between mb-4 shrink-0 bg-white border-4 border-black p-2 lg:p-3 rounded-2xl shadow-[4px_4px_0px_#000]">
                 <button 
                   onClick={() => setChartIndex(prev => prev - 1)} 
@@ -209,7 +215,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
                 </button>
               </div>
 
-              {/* Massive Graph Container: Drastically reduced inner padding so ECharts has max width/height */}
               <div className="flex-1 min-h-0 relative border-4 border-black bg-white rounded-2xl lg:rounded-3xl p-2 lg:p-4 shadow-[4px_4px_0px_#000]">
                 <ReactECharts 
                   option={currentChart.echarts_payload} 

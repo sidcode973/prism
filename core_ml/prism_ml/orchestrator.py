@@ -1,5 +1,7 @@
 import time
 import os
+import json
+import uuid
 from typing import Dict, Any
 import traceback
 import polars as pl
@@ -38,11 +40,9 @@ class PrismDAGExecutor:
             "null_values": ["NA", "N/A", "null", "NaN", "?", "", " ", "-", "unknown", "Unknown"],
             "ignore_errors": True,
             "truncate_ragged_lines": True,
-            # Quote char purposely left enabled to prevent thousand-separator fragmentation
         }
         
         if is_s3:
-            # Decapitate Polars' S3 engine and read bytes natively
             fs = s3fs.S3FileSystem(
                 client_kwargs={'endpoint_url': self.s3_endpoint},
                 key=self.s3_key,
@@ -61,7 +61,6 @@ class PrismDAGExecutor:
         if "train_model" in actions_in_order:
             train_idx = actions_in_order.index("train_model")
             
-            # 1. Feature Engineering must exist and precede Training
             engineer_idx = actions_in_order.index("feature_engineer") if "feature_engineer" in actions_in_order else -1
             if engineer_idx == -1 or engineer_idx > train_idx:
                 raise TrainingConfigurationError(
@@ -69,7 +68,6 @@ class PrismDAGExecutor:
                     message="WARNING: You are attempting to train a model on unencoded data. Please add a 'Feature Engineering' node before 'Train Model' to prevent crashes."
                 )
             
-            # 2. Cleaner must exist and precede Feature Engineering (if both are present)
             clean_idx = actions_in_order.index("clean_data") if "clean_data" in actions_in_order else -1
             if clean_idx != -1 and clean_idx > engineer_idx:
                 raise TrainingConfigurationError(
@@ -77,16 +75,16 @@ class PrismDAGExecutor:
                     message="WARNING: 'Clean Data' must occur before 'Feature Engineering'."
                 )
 
-    def execute_graph(self, contract: Dict[str, Any], raw_data_path: str) -> Dict[str, Any]:
+    def execute_graph(self, contract: Dict[str, Any], raw_data_path: str, master_run_id: str) -> Dict[str, Any]:
         """
         Dynamically executes whatever node sequence the user built on the UI.
         """
         print(f"\n🚀 EXECUTING GRAPH FOR USER: {contract['metadata'].get('user_id', 'Unknown')}")
+        print(f"🔗 INHERITED MASTER RUN ID: {master_run_id}")
         
         execution_order = contract.get("execution_order", [])
         nodes = {node["node_id"]: node for node in contract.get("nodes", [])}
         
-        # 1. Run Pre-Flight Check
         try:
             self.pre_flight_check(nodes, execution_order)
         except PrismCoreError as e:
@@ -94,7 +92,6 @@ class PrismDAGExecutor:
 
         # ==========================================
         # 2. DUAL-TRACK STATE MANAGEMENT
-        # Structurally separates human-readable data from ML matrices
         # ==========================================
         human_path = raw_data_path 
         human_df = None             
@@ -103,7 +100,15 @@ class PrismDAGExecutor:
         engineered_df = None
         
         results = {}
-        pipeline_metadata = {} 
+        
+        # Initialize the overarching Master Blueprint
+        master_blueprint = {
+            "run_id": master_run_id,
+            "original_dataset_path": raw_data_path,
+            "nodes_executed": execution_order
+        }
+        
+        charts_data = []
 
         try:
             for node_id in execution_order:
@@ -114,60 +119,95 @@ class PrismDAGExecutor:
                 print(f"▶️ Executing Node: {node_id} ({action})")
 
                 if action == "fix_csv":
-                    human_path = self.fixer.execute_fix(node_id, human_path, params)
-                    human_df = None # Invalidate the DF since the file just changed
+                    human_path, structural_blueprint = self.fixer.execute_fix(node_id, human_path, params, master_run_id)
+                    human_df = None 
                     results["fixed_data_path"] = human_path
+                    master_blueprint.update(structural_blueprint)
 
                 elif action == "clean_data":
-                    human_df, human_path, column_roles = self.cleaner.execute_cleaning(node_id, human_path, params)
-                    pipeline_metadata["column_roles"] = column_roles
+                    human_df, human_path, clean_blueprint = self.cleaner.execute_cleaning(node_id, human_path, params, master_run_id)
                     results["cleaned_data_status"] = "success"
                     results["cleaned_data_path"] = human_path
-                    results["metadata"] = pipeline_metadata
+                    master_blueprint.update(clean_blueprint)
 
                 elif action == "feature_engineer":
-                    if "column_roles" in pipeline_metadata:
-                        params["column_roles"] = pipeline_metadata["column_roles"]
+                    if "column_roles" in master_blueprint:
+                        params["column_roles"] = master_blueprint["column_roles"]
                         
-                    # Notice we pass 'human_path' IN, but assign output to the engineered track
-                    engineered_df, engineered_path = self.engineer.execute_engineering(node_id, human_path, params)
+                    engineered_df, engineered_path, eng_blueprint = self.engineer.execute_engineering(node_id, human_path, params, master_run_id)
                     results["engineered_data_status"] = "success"
                     results["engineered_data_path"] = engineered_path
+                    master_blueprint.update(eng_blueprint)
 
                 elif action == "train_model":
-                    # Trainer strictly uses the engineered track
                     if engineered_df is None:
                         if engineered_path is None:
                             raise TrainingConfigurationError(node_id=node_id, message="Engineered data missing. Feature Engineering must run before Training.")
                         engineered_df = self._safe_cloud_read(engineered_path)
                         
-                    if "column_roles" in pipeline_metadata:
-                        params["exclude_columns"] = [col for col, role in pipeline_metadata["column_roles"].items() if role == "identifier"]
+                    if "column_roles" in master_blueprint:
+                        params["exclude_columns"] = [col for col, role in master_blueprint.get("column_roles", {}).items() if role == "identifier"]
                         
-                    model, saved_path = self.trainer.execute_training(node_id, engineered_df, params, raw_data_path)
+                    model, saved_path, train_blueprint = self.trainer.execute_training(node_id, engineered_df, params, raw_data_path, master_run_id)
                     
-                    results["best_model"] = str(model.best_estimator)
-                    results["loss"] = model.best_loss
+                    master_blueprint.update(train_blueprint)
                     
-                    # Passing placeholders up to the UI until we fix trainer.py
-                    results["optimization_metric"] = params.get("metric", "auto")
-                    results["task_type"] = params.get("task", "auto")
+                    meta = train_blueprint.get("__training_metadata__", {})
+                    results["best_model"] = meta.get("best_estimator", str(model.best_estimator))
+                    
+                    # 🛡️ THE BULLETPROOF FLOAT FIREWALL 🛡️
+                    raw_score = meta.get("final_score")
+                    results["loss"] = float(raw_score) if raw_score is not None else None
+                    
+                    results["optimization_metric"] = meta.get("metric")
+                    results["task_type"] = meta.get("task")
                     results["trained_model_path"] = saved_path
 
                 elif action == "generate_plot":
-                    # Plotter strictly uses the human-readable track! It never graphs scaled ML arrays.
                     if human_df is None:
                         print("📥 Auto-loading raw/cleaned data for the Plotter...")
                         human_df = self._safe_cloud_read(human_path)
 
                     plot_data = self.plotter.generate_plot(node_id, human_df, params)
-                    
-                    if "charts" not in results:
-                        results["charts"] = []
-                    results["charts"].append(plot_data)
+                    charts_data.append(plot_data)
                     
                 else:
                     raise PrismCoreError(f"Unknown action type: {action}")
+
+            if charts_data:
+                results["charts"] = charts_data
+
+            # ==========================================
+            # 3. SAVE THE ARTIFACTS
+            # ==========================================
+            is_s3 = raw_data_path.startswith("s3://")
+            
+            if is_s3:
+                directory = "/".join(raw_data_path.split("/")[:-1])
+                blueprint_path = f"{directory}/inference_blueprint_{master_run_id}.json"
+                charts_path = f"{directory}/charts_{master_run_id}.json"
+                
+                fs = s3fs.S3FileSystem(client_kwargs={'endpoint_url': self.s3_endpoint}, key=self.s3_key, secret=self.s3_secret)
+                with fs.open(blueprint_path, 'w') as f:
+                    json.dump(master_blueprint, f, indent=4)
+                if charts_data:
+                    with fs.open(charts_path, 'w') as f:
+                        json.dump(charts_data, f, indent=4)
+            else:
+                dataset_directory = os.path.dirname(raw_data_path)
+                blueprint_path = os.path.join(dataset_directory, f"inference_blueprint_{master_run_id}.json")
+                charts_path = os.path.join(dataset_directory, f"charts_{master_run_id}.json")
+                
+                with open(blueprint_path, 'w') as f:
+                    json.dump(master_blueprint, f, indent=4)
+                if charts_data:
+                    with open(charts_path, 'w') as f:
+                        json.dump(charts_data, f, indent=4)
+
+            print(f"📜 Master Inference Blueprint saved at: {blueprint_path}")
+            
+            results["blueprint_path"] = blueprint_path
+            results["run_id"] = master_run_id
 
             return {
                 "status": "success",
