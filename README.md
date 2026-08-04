@@ -5,10 +5,11 @@ Project Prism leverages LLM routing, out-of-core data processing, and visual DAG
 
 ## 🏗️ Architecture
 
-This is a domain-isolated monorepo containing three microservices:
-1. **Frontend:** Next.js (React Flow + ECharts + Zustand)
-2. **Backend:** FastAPI (Celery + Redis + PostgreSQL)
-3. **Core ML:** Python (Polars + FLAML + SHAP + Groq)
+This is a domain-isolated monorepo containing three microservices. For detailed technical information on how each module is implemented and what specific features they provide, please refer to their dedicated documentation files:
+
+1. **[Frontend](FRONTEND_README.md):** Next.js (React Flow + ECharts + Zustand)
+2. **[Backend](BACKEND_README.md):** FastAPI (Celery + Redis + PostgreSQL + MinIO)
+3. **[Core ML](ML_README.md):** Python (Polars + FLAML + Llama 3 Router)
 
 ---
 

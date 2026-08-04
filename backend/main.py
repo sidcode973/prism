@@ -138,9 +138,36 @@ async def upload_dataset(
         file_size = len(file_bytes)
         file_data = io.BytesIO(file_bytes)
 
-        dataset_id = str(uuid.uuid4())
-        minio_path = f"{current_user_id}/{dataset_id}/{file.filename}"
+        # ---------------------------------------------------------
+        # THE FIX: Check if the file already exists to prevent duplicates
+        # ---------------------------------------------------------
+        existing_dataset = db.query(DatasetMetadata).filter(
+            DatasetMetadata.user_id == current_user_id,
+            DatasetMetadata.file_name == file.filename
+        ).first()
 
+        if existing_dataset:
+            print(f"🔄 Overwriting existing file record for '{file.filename}'")
+            dataset_id = existing_dataset.id
+            minio_path = existing_dataset.minio_path
+            
+            # Update the size in case the new file is larger/smaller
+            existing_dataset.file_size_bytes = file_size
+        else:
+            print(f"✨ Creating new file record for '{file.filename}'")
+            dataset_id = str(uuid.uuid4())
+            minio_path = f"{current_user_id}/{dataset_id}/{file.filename}"
+            
+            new_dataset = DatasetMetadata(
+                id=dataset_id,
+                user_id=current_user_id,
+                file_name=file.filename,
+                minio_path=minio_path,
+                file_size_bytes=file_size
+            )
+            db.add(new_dataset)
+
+        # MinIO automatically overwrites the existing file at this path
         minio_client.put_object(
             BUCKET_NAME,
             minio_path,
@@ -149,14 +176,6 @@ async def upload_dataset(
             content_type=file.content_type
         )
 
-        new_dataset = DatasetMetadata(
-            id=dataset_id,
-            user_id=current_user_id,
-            file_name=file.filename,
-            minio_path=minio_path,
-            file_size_bytes=file_size
-        )
-        db.add(new_dataset)
         db.commit()
 
         return {"status": "success", "dataset_id": dataset_id, "file_name": file.filename}
@@ -164,7 +183,6 @@ async def upload_dataset(
     except Exception as e:
         db.rollback() 
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
 @app.get("/api/datasets/{dataset_id}/columns")
 async def get_dataset_columns(
     dataset_id: str, 
@@ -194,6 +212,9 @@ async def get_dataset_columns(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read dataset schema: {str(e)}")
 
+# ==========================================
+# RUN PIPELINE ENDPOINT (THE HYBRID OVERRIDE)
+# ==========================================
 # ==========================================
 # RUN PIPELINE ENDPOINT (THE HYBRID OVERRIDE)
 # ==========================================
@@ -231,15 +252,22 @@ async def run_pipeline(
     base_prompt = prompt.strip()
     manual_context = ""
     
-    if manual_nodes:
-        # Prevent the LLM from throwing the "No pipeline actions" error
-        if not base_prompt:
-            base_prompt = "Adopt my manual canvas state exactly. Auto-complete any missing mathematical parameters optimally based on the schema profile. DO NOT reject."
-            
+    # ---------------------------------------------------------
+    # THE FIX: Safely parse nodes FIRST and ensure the array is NOT empty
+    # ---------------------------------------------------------
+    parsed_nodes = []
+    parsed_edges = []
+    
+    if manual_nodes and manual_nodes.strip() != "[]":
         try:
             parsed_nodes = json.loads(manual_nodes)
             parsed_edges = json.loads(manual_edges) if manual_edges else []
-            manual_context = f"\n[USER MANUAL CANVAS STATE]:\nNodes: {json.dumps(parsed_nodes)}\nEdges: {json.dumps(parsed_edges)}\n"
+            
+            # Only apply manual canvas context if nodes actually exist!
+            if len(parsed_nodes) > 0:
+                if not base_prompt:
+                    base_prompt = "Adopt my manual canvas state exactly. Auto-complete any missing mathematical parameters optimally based on the schema profile. DO NOT reject."
+                manual_context = f"\n[USER MANUAL CANVAS STATE]:\nNodes: {json.dumps(parsed_nodes)}\nEdges: {json.dumps(parsed_edges)}\n"
         except json.JSONDecodeError:
             pass
 
@@ -276,9 +304,8 @@ async def run_pipeline(
         contract_dict = validated_response.pipeline.model_dump()
 
         # 🛡️ THE HYBRID CANVAS OVERRIDE 🛡️
-        # We let the AI generate smart defaults (like impute_rules), but we force-merge
-        # your explicit UI settings on top of them, and lock the graph topology to match the canvas.
-        if manual_nodes:
+        # THE FIX: Only trigger the override sequence if parsed_nodes has items!
+        if len(parsed_nodes) > 0:
             try:
                 # 1. Group LLM parameters by action_type
                 llm_params_by_type = {}
@@ -360,6 +387,7 @@ async def run_pipeline(
 
         if async_mode:
             print(f"⚡ Dispatching Run {master_run_id} to Celery Task Queue...")
+            from celery_worker import execute_pipeline_task
             execute_pipeline_task.delay(contract_dict, file_path, master_run_id, current_user_id)
             return {
                 "status": "queued",

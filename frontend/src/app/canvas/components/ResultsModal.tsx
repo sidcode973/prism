@@ -46,7 +46,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     try {
       const token = await getToken();
       
-      // Injecting the run_id into the secure API call
       const response = await fetch(`http://localhost:8000/api/download-csv?stage=${stage}&run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -85,7 +84,6 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     try {
       const token = await getToken();
       
-      // Injecting the run_id into the secure API call
       const response = await fetch(`http://localhost:8000/api/download-model?run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -216,7 +214,9 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
               </div>
 
               <div className="flex-1 min-h-0 relative border-4 border-black bg-white rounded-2xl lg:rounded-3xl p-2 lg:p-4 shadow-[4px_4px_0px_#000]">
+                {/* THE FIX: Added key={safeIndex} to force React to render a fresh canvas every time you click next/prev */}
                 <ReactECharts 
+                  key={safeIndex}
                   option={currentChart.echarts_payload} 
                   style={{ height: '100%', width: '100%' }} 
                   notMerge={true}

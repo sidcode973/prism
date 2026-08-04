@@ -66,7 +66,6 @@ class PipelineContract(BaseModel):
              if action_order.index("clean_data") > action_order.index("feature_engineer"):
                 raise ValueError("Graph Error: 'clean_data' must logically occur BEFORE 'feature_engineer'.")
 
-        # THE FIX FOR PROBLEM 6 (Plotting scaled arrays instead of raw data)
         if "feature_engineer" in action_order and "generate_plot" in action_order:
              if action_order.index("generate_plot") > action_order.index("feature_engineer"):
                 raise ValueError("Graph Error: 'generate_plot' MUST logically occur BEFORE 'feature_engineer' to visualize human-readable data.")
@@ -85,7 +84,8 @@ class RouterResponse(BaseModel):
 class PrismRouterAgent:
     def __init__(self):
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.model = "openai/gpt-oss-120b" 
+        # Changed to a valid Groq model string
+        self.model = "openai/gpt-oss-120b"
 
     def generate_contract(self, user_prompt: str, user_id: str, project_id: str, file_name: str, data_profile: str) -> str:
         system_prompt = f"""
@@ -94,9 +94,12 @@ class PrismRouterAgent:
         The dataset is: {file_name}
         
         --- DATA SCHEMA PROFILE ---
+
         Analyze this profile to make autonomous decisions regarding target columns and data relationships. PAY CLOSE ATTENTION TO THE 'Uniqueness' METRIC:
         {data_profile}
         
+        CRITICAL AUTONOMY RULE: If the user asks to train a model but DOES NOT explicitly name a target column, YOU MUST autonomously analyze the Data Profile above and select the most logical column to predict (e.g., a price, a category, a species, or a binary outcome). DO NOT leave the target column blank.
+
         --- PIPELINE RULES ---
         You have 5 Node Types available. You must chain them logically.
         
@@ -113,7 +116,7 @@ class PrismRouterAgent:
 
         3. "feature_engineer": Use ONLY to mathematically prep data for ML Algorithms.
            - Params:
-             "target_column": "ColumnName" (The specific variable to predict)
+             "target_column": "ExactColumnNameFromSchema" (The specific variable to predict)
              "scale_method": "standard" or "minmax" or "none"
              "encode_categoricals": true 
              "exclude_columns": [] 
@@ -128,6 +131,9 @@ class PrismRouterAgent:
              "title": "A descriptive title for the chart"
 
         5. "train_model": Use to train ML models.
+           - Params MUST strictly include:
+             "target_column": "ExactColumnNameFromSchema" (Must exactly match feature_engineer target)
+             "model_type": "auto"
 
         --- AUTONOMY, GRAPH SELECTION & ABORT RULES ---
         - ML AUTONOMY: If the user asks to train a model, you MUST inject `fix_csv` -> `clean_data` -> `feature_engineer` before the `train_model` node.
@@ -147,9 +153,10 @@ class PrismRouterAgent:
                     {{"node_id": "fix_1", "action_type": "fix_csv", "parameters": {{"run_structural_repair": true}}}},
                     {{"node_id": "clean_1", "action_type": "clean_data", "parameters": {{"auto_purge": true, "coerce_types": true, "remove_duplicates": true, "drop_columns": [], "impute_rules": {{}}}}}},
                     {{"node_id": "plot_1", "action_type": "generate_plot", "parameters": {{"chart_type": "scatter", "x_col": "Age", "y_col": "Salary", "title": "Age vs Salary"}}}},
-                    {{"node_id": "fe_1", "action_type": "feature_engineer", "parameters": {{"target_column": "Salary", "scale_method": "standard", "encode_categoricals": true, "exclude_columns": []}}}}
+                    {{"node_id": "fe_1", "action_type": "feature_engineer", "parameters": {{"target_column": "Salary", "scale_method": "standard", "encode_categoricals": true, "exclude_columns": []}}}},
+                    {{"node_id": "train_1", "action_type": "train_model", "parameters": {{"target_column": "Salary", "model_type": "auto"}}}}
                 ],
-                "execution_order": ["fix_1", "clean_1", "plot_1", "fe_1"]
+                "execution_order": ["fix_1", "clean_1", "plot_1", "fe_1", "train_1"]
             }}
         }}
         """
@@ -166,7 +173,10 @@ class PrismRouterAgent:
                 )
 
                 raw_json = response.choices[0].message.content
-                parsed_data = json.loads(raw_json)
+                
+                # FIXED: Strip markdown wrapper backticks before parsing so json.loads doesn't crash!
+                clean_json = raw_json.replace("```json", "").replace("```", "").strip()
+                parsed_data = json.loads(clean_json)
 
                 # ==========================================
                 # THE BULLETPROOF INJECTION SHIELD
@@ -195,8 +205,14 @@ class PrismRouterAgent:
                     raise ValueError(f"LLM repeatedly generated invalid structure. Details: {e}")
                 time.sleep(2)
                 
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Attempt {attempt + 1}: Failed to decode JSON from LLM. Retrying... Error: {e}")
+                if attempt == 2:
+                    raise ConnectionError(f"API failed after 3 retries: {e}")
+                time.sleep(2)
+                
             except Exception as e:
-                print(f"⚠️ Attempt {attempt + 1}: API error. Retrying...")
+                print(f"⚠️ Attempt {attempt + 1}: API error. Retrying... Error: {e}")
                 if attempt == 2:
                     raise ConnectionError(f"API failed after 3 retries: {e}")
                 time.sleep(2)

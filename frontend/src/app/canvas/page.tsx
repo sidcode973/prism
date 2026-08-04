@@ -5,7 +5,7 @@ import { UserButton, useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, ReactFlowProvider, useReactFlow, addEdge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { ArrowLeft, Database, Bot, BarChart3 } from "lucide-react";
+import { ArrowLeft, Database, Bot, BarChart3, Settings, Sparkles, BrainCircuit } from "lucide-react";
 
 import UploadModal from "./components/UploadModal";
 import ResultsModal from "./components/ResultsModal";
@@ -22,7 +22,7 @@ interface DatasetRecord { id: string; file_name: string; }
 
 function CanvasBoard() {
   const { fitView, screenToFlowPosition } = useReactFlow();
-  const { getToken } = useAuth();
+  const { getToken, isLoaded, isSignedIn } = useAuth();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   
   const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
@@ -48,26 +48,48 @@ function CanvasBoard() {
     return () => { window.removeEventListener('mousemove', resetIdleTimer); window.removeEventListener('keydown', resetIdleTimer); clearTimeout(timeout); };
   }, []);
 
-  const fetchDatasets = useCallback(async () => {
+  // THE FIX: Added an auto-retry loop. If it gets a 401, it waits 1 second and tries again.
+  const fetchDatasets = useCallback(async (retryCount = 0) => {
+    if (typeof window === "undefined" || !isLoaded || !isSignedIn) return;
     try {
       const token = await getToken();
       if (!token) return;
-      const response = await fetch("http://localhost:8000/api/datasets", { headers: { "Authorization": `Bearer ${token}` } });
+      
+      const response = await fetch("http://localhost:8000/api/datasets", { 
+        headers: { "Authorization": `Bearer ${token}` } 
+      });
+      
       if (response.ok) {
         const data = await response.json();
         setAvailableDatasets(Array.isArray(data.datasets) ? data.datasets : []);
+      } else if (response.status === 401) {
+        console.warn(`Caught 401 on refresh. Clerk token syncing... (Retry ${retryCount + 1}/3)`);
+        // If we get a 401, wait 1 second for Clerk to finish its background sync, then try again
+        if (retryCount < 3) {
+          setTimeout(() => fetchDatasets(retryCount + 1), 1000);
+        }
       }
-    } catch (error) { console.error("Failed to fetch datasets"); }
-  }, [getToken]);
+    } catch (error) { 
+      console.error("Failed to fetch datasets", error); 
+    }
+  }, [getToken, isLoaded, isSignedIn]);
 
-  useEffect(() => { fetchDatasets(); }, [fetchDatasets]);
-
+  useEffect(() => { 
+    if (isLoaded && isSignedIn) {
+      fetchDatasets(0); 
+    }
+  }, [isLoaded, isSignedIn, fetchDatasets]);
   // Schema Introspection hook
   useEffect(() => {
     const fetchColumns = async () => {
-      if (!selectedDatasetId) { setDatasetColumns([]); return; }
+      // THE FIX: Added typeof window guard here as well
+      if (typeof window === "undefined" || !selectedDatasetId || !isLoaded || !isSignedIn) { 
+        setDatasetColumns([]); 
+        return; 
+      }
       try {
         const token = await getToken();
+        if (!token) return;
         const response = await fetch(`http://localhost:8000/api/datasets/${selectedDatasetId}/columns`, { headers: { "Authorization": `Bearer ${token}` } });
         if (response.ok) {
           const data = await response.json();
@@ -76,7 +98,7 @@ function CanvasBoard() {
       } catch (error) { console.error("Failed to fetch columns"); }
     };
     fetchColumns();
-  }, [selectedDatasetId, getToken]);
+  }, [selectedDatasetId, getToken, isLoaded, isSignedIn]);
 
   const onDragStart = (event: any, nodeType: string, label: string, color: string) => {
     event.dataTransfer.setData('application/reactflow', JSON.stringify({ action_type: nodeType, label, colorClass: color }));
@@ -98,7 +120,7 @@ function CanvasBoard() {
         id: `${parsedData.action_type}_${Date.now()}`,
         type: 'neoNode',
         position,
-        data: { ...parsedData, description: 'Manual node.', icon: null, config: {} }, // Icon mapped in Node component via class
+        data: { ...parsedData, description: 'Manual node.', icon: null, config: {} }, 
       };
       setNodes((nds) => nds.concat(newNode));
     }, [screenToFlowPosition, setNodes]
@@ -127,11 +149,47 @@ function CanvasBoard() {
     setNodes((nds) => nds.map((n: any) => (n.id === selectedNode.id ? updatedNode : n)));
   };
 
+  const autoDrawGraph = (dagStructure: any) => {
+    const newNodes: any[] = [];
+    const newEdges: any[] = [];
+
+    dagStructure.nodes.forEach((n: any, index: number) => {
+      let color = 'bg-gray-300';
+      let icon = <Settings size={20} />;
+      let uiLabel = n.action_type;
+
+      if (n.action_type === 'load_dataset') { color = 'bg-green-300'; icon = <Database size={20} />; uiLabel = "Raw Data"; }
+      if (n.action_type === 'clean_data') { color = 'bg-blue-300'; icon = <Sparkles size={20} />; uiLabel = "Clean Data"; }
+      if (n.action_type === 'train_model') { color = 'bg-purple-300'; icon = <BrainCircuit size={20} />; uiLabel = "Train Model"; }
+      if (n.action_type === 'generate_plot') { color = 'bg-pink-300'; icon = <BarChart3 size={20} />; uiLabel = "Plot Graph"; } 
+      if (n.action_type === 'fix_csv') { color = 'bg-red-300'; icon = <Settings size={20} />; uiLabel = "Fix CSV"; }
+      if (n.action_type === 'feature_engineer') { color = 'bg-orange-300'; icon = <Bot size={20} />; uiLabel = "Feature Eng"; }
+
+      newNodes.push({
+        id: n.node_id, type: 'neoNode', position: { x: 100 + (index * 320), y: 250 }, 
+        data: { label: n.parameters.ui_label || uiLabel, description: n.parameters.description || 'AI Configured', action_type: n.action_type, colorClass: color, icon: icon, config: n.parameters }
+      });
+    });
+
+    const executionOrder = dagStructure.execution_order || [];
+    for (let i = 0; i < executionOrder.length - 1; i++) {
+      newEdges.push({
+        id: `edge_${executionOrder[i]}_${executionOrder[i+1]}`, source: executionOrder[i], target: executionOrder[i+1], type: 'neoEdge', animated: true, style: { stroke: 'black', strokeWidth: 4 }
+      });
+    }
+
+    setNodes(newNodes); setEdges(newEdges);
+    setTimeout(() => fitView({ padding: 0.3, duration: 800 }), 100);
+  };
+
   const handleAIGenerate = async () => {
-    if (!selectedDatasetId) { alert("⚠️ Please select a dataset first!"); return; }
+    // THE FIX: Added typeof window guard here to protect manual clicks as well
+    if (typeof window === "undefined" || !selectedDatasetId) { alert("⚠️ Please select a dataset first!"); return; }
     setIsThinking(true); setIsResultsPanelOpen(false); setSelectedNode(null);
     try {
       const token = await getToken();
+      if (!token) throw new Error("No token available");
+      
       const formData = new FormData();
       formData.append("dataset_id", selectedDatasetId);
       formData.append("prompt", aiPrompt.trim() || "Execute my manual pipeline.");
@@ -143,7 +201,10 @@ function CanvasBoard() {
       if (response.ok) {
         const data = await response.json();
         
-        // 🚨 FIX: Re-enable the rejection alert so it doesn't fail silently
+        if (data.dag_structure) {
+            autoDrawGraph(data.dag_structure);
+        }
+
         if (data.execution_results?.status === "error" || data.execution_results?.status === "warning") {
             alert(`🛑 Pipeline Interrupted:\n${data.execution_results.message}`);
             return;
@@ -164,7 +225,6 @@ function CanvasBoard() {
   return (
     <div className="h-screen w-screen flex flex-col bg-[#fdfaf5] text-black font-sans overflow-hidden">
       
-      {/* OBS 2: CUSTOM ANIMATED LOADING SCREEN RESTORED */}
       {isThinking && (
         <div className="absolute inset-0 z-[9999] bg-[#fdfaf5]/90 backdrop-blur-md flex flex-col items-center justify-center overflow-hidden">
           <div className="absolute w-64 h-64 bg-yellow-300 border-8 border-black rounded-full mix-blend-multiply animate-[ping_3s_ease-in-out_infinite] opacity-50 -ml-32"></div>
@@ -194,7 +254,6 @@ function CanvasBoard() {
       <main className="flex-1 w-full relative overflow-hidden flex">
         <Sidebar isOpen={isLeftSidebarOpen} toggleSidebar={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)} onDragStart={onDragStart} />
         
-        {/* OBS 9: RESTORE FLOATING ANALYSIS BUTTON */}
         {pipelineResult && !isThinking && !isResultsPanelOpen && !isUploadModalOpen && (
           <button type="button" onClick={() => setIsResultsPanelOpen(true)} className="absolute top-6 right-6 z-30 bg-yellow-300 hover:bg-yellow-400 border-4 border-black px-6 py-3 rounded-xl shadow-[6px_6px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center gap-3 font-black uppercase text-sm">
             <BarChart3 size={20} /> Open Analysis
