@@ -10,7 +10,7 @@ class PrismFixer:
     def __init__(self):
         print("🛠️ Prism CSV Fixer Initialized")
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.model = "llama3-70b-8192" # Updated to a standard Groq model name
+        self.model = "openai/gpt-oss-120b" # Updated to a standard Groq model name
         
         # Cloud Authentication Credentials
         self.s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")

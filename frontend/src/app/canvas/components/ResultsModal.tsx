@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { X, Download, ChevronLeft, ChevronRight, BarChart3, Database, BrainCircuit, Wrench, Sparkles, Binary, Rocket, Zap, Play, CheckCircle2, Plus } from 'lucide-react';
+import { X, Download, ChevronLeft, ChevronRight, BarChart3, Database, BrainCircuit, Wrench, Sparkles, Binary, Rocket, Zap, Play, CheckCircle2, Plus, Info, Copy, FileArchive, FileText } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { useAuth } from "@clerk/nextjs"; 
 
@@ -11,6 +11,8 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   const [isDeployed, setIsDeployed] = useState(false);
   const [apiEndpoint, setApiEndpoint] = useState("");
   const [showPlayground, setShowPlayground] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [copied, setCopied] = useState(false);
   
   const [viewMode, setViewMode] = useState<'form' | 'json'>('form');
   const [testPayload, setTestPayload] = useState('{}');
@@ -27,6 +29,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     setIsDeployed(pipelineResult?.is_deployed || false);
     setApiEndpoint(pipelineResult?.api_endpoint || "");
     setShowPlayground(false);
+    setShowGuide(false);
     setTestResult("");
 
     // ==========================================
@@ -151,12 +154,41 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `prism_ai_model_${runId}.pkl`;
+      a.download = `prism_deployment_pack_${runId}.zip`;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { window.URL.revokeObjectURL(url); a.remove(); }, 1000);
     } catch (error: any) {
       console.error("Error downloading model:", error);
+      alert(`⚠️ ${error.message}`);
+    }
+  };
+
+// 🚀 NEW: Download Audit Report PDF Handler (IDM-Safe)
+  const handleDownloadReport = async () => {
+    if (!runId) return alert("⚠️ Cannot download: Run ID is missing from the results.");
+    try {
+      const token = await getToken();
+      const response = await fetch(`http://localhost:8000/api/download-report?run_id=${runId}&t=${Date.now()}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error(await response.json().then((d: any) => d?.detail).catch(() => "Download failed"));
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `prism_audit_report_${runId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { window.URL.revokeObjectURL(url); a.remove(); }, 1000);
+    } catch (error: any) {
+      // 🛡️ IDM BYPASS: If a download manager intercepts the stream, React throws a fetch error. We ignore it.
+      if (error.message.includes("Failed to fetch") || error.name === "TypeError") {
+        console.warn("Download intercepted by external manager (e.g., IDM).");
+        return; 
+      }
+      console.error("Error downloading report:", error);
       alert(`⚠️ ${error.message}`);
     }
   };
@@ -211,6 +243,87 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     }
   };
 
+  const pythonSnippet = `import joblib
+import json
+import pandas as pd
+
+# 1. Extract your Deployment Pack ZIP
+# 2. Load the Model and Blueprint
+model_path = "trained_model_${runId}.pkl"
+blueprint_path = "inference_blueprint_${runId}.json"
+
+print("Loading Prism Deployment Pack...")
+model = joblib.load(model_path)
+with open(blueprint_path, 'r') as f:
+    blueprint = json.load(f)
+
+# 2. Format Your Input Data (Raw, human-readable format)
+new_data = pd.DataFrame([{
+      # "Feature_1": 100,
+    # "Feature_2": "CategoryA"
+}])
+
+# 3. Apply Blueprint Math to Raw Data
+def apply_blueprint(df, bp):
+    df = df.copy()
+    
+    # A. Imputations
+    for col, rules in bp.get("__imputations__", {}).items():
+        if col in df.columns:
+            df[col] = df[col].fillna(rules.get("fill_value"))
+
+    # B. Date Decomposition
+    for col in bp.get("__date_decompositions__", []):
+        if col in df.columns:
+            dt_series = pd.to_datetime(df[col], errors='coerce')
+            df[f"{col}_year"] = dt_series.dt.year
+            df[f"{col}_month"] = dt_series.dt.month
+            df[f"{col}_day"] = dt_series.dt.day
+            df[f"{col}_dayofweek"] = dt_series.dt.dayofweek
+            df = df.drop(columns=[col])
+
+    # C. One-Hot Encoding Mappings
+    for col, allowed_cats in bp.get("__ohe_mappings__", {}).items():
+        if col in df.columns:
+            for cat in allowed_cats:
+                df[f"{col}_{cat}"] = (df[col].astype(str) == str(cat)).astype(int)
+            if "Other" in allowed_cats:
+                df[f"{col}_Other"] = (~df[col].astype(str).isin([str(c) for c in allowed_cats])).astype(int)
+            df = df.drop(columns=[col])
+
+    # D. Feature Scaling
+    scaling = bp.get("__scaling_params__", {})
+    if scaling.get("method") == "standard":
+        for col, stats in scaling.get("params", {}).items():
+            if col in df.columns:
+                df[col] = (pd.to_numeric(df[col], errors='coerce').fillna(0) - stats["mean"]) / stats["std"]
+    elif scaling.get("method") == "minmax":
+        for col, stats in scaling.get("params", {}).items():
+            if col in df.columns:
+                rng = stats["max"] - stats["min"] if (stats["max"] - stats["min"]) != 0 else 1.0
+                df[col] = (pd.to_numeric(df[col], errors='coerce').fillna(0) - stats["min"]) / rng
+
+    # E. Reindex to guarantee columns match training EXACTLY
+    training_features = bp.get("__training_metadata__", {}).get("feature_names", [])
+    if training_features:
+        df = df.reindex(columns=training_features, fill_value=0)
+        
+    return df
+
+print("Translating raw data via Blueprint...")
+processed_data = apply_blueprint(new_data, blueprint)
+
+# 4. Generate Predictions on the Encoded Data
+predictions = model.predict(processed_data)
+print(f"🔮 Final Prediction: {predictions[0]}")
+`;
+
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(pythonSnippet);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <div className="fixed inset-0 z-[9999] bg-[#fdfaf5] flex flex-col overflow-hidden">
       
@@ -254,8 +367,17 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
 
             {pipelineResult.hasModel || pipelineResult.best_model ? (
               <div className="flex flex-col gap-2 mt-1">
-                <button onClick={handleDownloadModel} className="w-full py-3 px-4 border-4 border-black bg-green-300 hover:bg-green-400 rounded-xl shadow-[4px_4px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between font-black text-sm lg:text-md uppercase">
-                  <span className="flex items-center gap-3"><BrainCircuit size={20} /> Get AI Model</span><Download size={20} />
+                <div className="flex gap-2 w-full">
+                  <button onClick={handleDownloadModel} className="flex-1 py-3 px-3 border-4 border-black bg-green-300 hover:bg-green-400 rounded-xl shadow-[4px_4px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between font-black text-xs lg:text-sm uppercase">
+                    <span className="flex items-center gap-2"><FileArchive size={18} /> Get Deployment Pack</span><Download size={18} />
+                  </button>
+                  <button onClick={() => setShowGuide(true)} title="Integration Guide" className="w-12 shrink-0 flex items-center justify-center border-4 border-black bg-white hover:bg-gray-100 rounded-xl shadow-[4px_4px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all">
+                    <Info size={20} strokeWidth={3} />
+                  </button>
+                </div>
+
+                <button onClick={handleDownloadReport} className="w-full py-3 px-3 border-4 border-black bg-pink-300 hover:bg-pink-400 rounded-xl shadow-[4px_4px_0px_#000] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all flex items-center justify-between font-black text-xs lg:text-sm uppercase">
+                  <span className="flex items-center gap-2"><FileText size={18} /> Get Audit Report</span><Download size={18} />
                 </button>
 
                 {!isDeployed ? (
@@ -337,6 +459,33 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
                   <label className="font-black text-sm uppercase text-gray-500">Inference Response</label>
                   <pre className="flex-1 w-full border-4 border-black rounded-xl p-4 font-mono text-sm bg-gray-900 text-green-400 overflow-auto">
                     {testResult || "// Engine ready. Awaiting request..."}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showGuide && (
+            <div className="absolute inset-4 lg:inset-6 z-[60] bg-white border-4 border-black rounded-3xl shadow-[8px_8px_0px_#000] p-6 flex flex-col overflow-hidden">
+              <div className="flex justify-between items-center mb-4 border-b-4 border-black pb-4 shrink-0">
+                <h3 className="font-black text-2xl uppercase flex items-center gap-2"><Info size={28} className="text-blue-500"/> Integration Guide</h3>
+                <button onClick={() => setShowGuide(false)} className="p-1 hover:bg-red-200 border-2 border-transparent hover:border-black rounded-lg transition-all"><X size={24} strokeWidth={3} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto pr-2 flex flex-col gap-4">
+                <p className="font-bold text-gray-700">
+                  Your downloaded deployment pack contains two core files: your trained machine learning model <code className="bg-gray-200 px-1 py-0.5 rounded">.pkl</code> and your inference blueprint <code className="bg-gray-200 px-1 py-0.5 rounded">.json</code>.
+                </p>
+                <div className="border-l-4 border-yellow-400 pl-4 py-2">
+                  <p className="text-sm font-bold text-gray-600">The blueprint contains all the scaling parameters, imputation rules, and one-hot encoding maps used during training. To guarantee accurate predictions, ensure your custom data pipeline respects the exact column schema listed under  <code className="text-xs">human_readable_features</code>. Make sure you have required libraries installed such as polars, flaml, joblib, lightgbm, xgboost etc.</p>
+                </div>
+                <div className="relative group mt-2">
+                  <div className="absolute right-4 top-4 z-10">
+                    <button onClick={copyToClipboard} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded border border-white/30 text-xs font-bold transition-all">
+                      {copied ? <CheckCircle2 size={14} className="text-green-400"/> : <Copy size={14} />} {copied ? 'COPIED' : 'COPY'}
+                    </button>
+                  </div>
+                  <pre className="bg-gray-900 text-green-400 p-5 rounded-xl border-4 border-black font-mono text-xs overflow-x-auto w-full shadow-inner">
+                    {pythonSnippet}
                   </pre>
                 </div>
               </div>

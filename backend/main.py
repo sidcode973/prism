@@ -6,7 +6,7 @@ import uuid
 import s3fs
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, Depends, HTTPException, Security, File, UploadFile, Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse,Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -426,7 +426,6 @@ async def run_pipeline(
         pipeline_run.status = "failed"
         db.commit()
         raise HTTPException(status_code=500, detail=f"Engine Execution Failure: {str(e)}")
-
 # ==========================================
 # SECURE RUN-ISOLATED DOWNLOAD ENDPOINTS
 # ==========================================
@@ -445,20 +444,34 @@ async def download_model(
         raise HTTPException(status_code=404, detail=f"No trained model found for Run ID: {run_id}")
 
     fs = get_s3_fs()
-    s3_path = run.model_artifact_path if run.model_artifact_path.startswith("s3://") else f"s3://{run.model_artifact_path}"
+    
+    base_dir = "/".join(run.model_artifact_path.split("/")[:-1])
+    zip_s3_path = f"{base_dir}/prism_deployment_pack_{run_id}.zip"
+    
+    if not zip_s3_path.startswith("s3://"):
+        zip_s3_path = f"s3://{zip_s3_path}"
 
     try:
-        def iterfile():
-            with fs.open(s3_path, "rb") as f:
-                yield from f
-                
-        return StreamingResponse(
-            iterfile(), 
-            media_type='application/octet-stream', 
-            headers={"Content-Disposition": f'attachment; filename="prism_model_{run_id}.pkl"'}
-        )
+        if fs.exists(zip_s3_path):
+            # Read raw bytes from MinIO
+            file_bytes = fs.cat(zip_s3_path)
+            
+            # 🚀 THE FIX: Wrap bytes in a strict I/O buffer to preserve binary integrity
+            buffer = io.BytesIO(file_bytes)
+            
+            return StreamingResponse(
+                buffer,
+                media_type='application/zip',
+                headers={
+                    "Content-Disposition": f'attachment; filename="prism_deployment_pack_{run_id}.zip"',
+                    "Content-Length": str(len(file_bytes)) 
+                }
+            )
+        else:
+            raise FileNotFoundError("Deployment Pack ZIP not found in cloud storage.")
+            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Model Download Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Download Error: {str(e)}")
 
 @app.get("/api/download-csv")
 async def download_csv(
@@ -513,31 +526,9 @@ async def download_csv(
 # ==========================================
 # 🚀 MODEL DEPLOYMENT & INFERENCE ENDPOINTS
 # ==========================================
-@app.post("/api/models/deploy/{run_id}")
-async def deploy_model(
-    run_id: str, 
-    current_user_id: str = Depends(verify_token), 
-    db: Session = Depends(get_db)
-):
-    """Flags a successfully trained model as actively deployed and returns the API endpoint."""
-    run = db.query(PipelineRun).filter(
-        PipelineRun.id == run_id, 
-        PipelineRun.user_id == current_user_id
-    ).first()
-    
-    if not run or not run.model_artifact_path or not run.blueprint_path:
-        raise HTTPException(status_code=404, detail="Model artifacts or blueprint missing. Cannot deploy.")
-
-    run.is_deployed = True
-    run.api_endpoint = f"/api/predict/{run_id}"
-    db.commit()
-
-    return {
-        "status": "success", 
-        "message": "Model deployed successfully to Prism Inference Engine.", 
-        "api_endpoint": run.api_endpoint
-    }
-
+# ==========================================
+# SECURE RUN-ISOLATED DOWNLOAD ENDPOINTS
+# ==========================================
 @app.post("/api/predict/{run_id}")
 async def predict_live(
     run_id: str, 
@@ -656,3 +647,73 @@ async def get_run_details(run_id: str, current_user_id: str = Depends(verify_tok
         "api_endpoint": run.api_endpoint,
         "charts": charts_data
     }
+
+@app.post("/api/models/deploy/{run_id}")
+async def deploy_model(
+    run_id: str, 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    """Flags a successfully trained model as actively deployed and returns the API endpoint."""
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run or not run.model_artifact_path or not run.blueprint_path:
+        raise HTTPException(status_code=404, detail="Model artifacts or blueprint missing. Cannot deploy.")
+
+    run.is_deployed = True
+    run.api_endpoint = f"/api/predict/{run_id}"
+    db.commit()
+
+    return {
+        "status": "success", 
+        "message": "Model deployed successfully to Prism Inference Engine.", 
+        "api_endpoint": run.api_endpoint
+    }
+# ==========================================
+# ENTERPRISE AUDIT REPORT DOWNLOAD ENDPOINT
+# ==========================================
+@app.get("/api/download-report")
+async def download_report(
+    run_id: str, 
+    current_user_id: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    run = db.query(PipelineRun).filter(
+        PipelineRun.id == run_id, 
+        PipelineRun.user_id == current_user_id
+    ).first()
+    
+    if not run or not run.model_artifact_path:
+        raise HTTPException(status_code=404, detail=f"No run found for ID: {run_id}")
+
+    fs = get_s3_fs()
+    
+    # Dynamically locate the PDF in the run's cloud directory
+    base_dir = "/".join(run.model_artifact_path.split("/")[:-1])
+    pdf_s3_path = f"{base_dir}/prism_audit_report_{run_id}.pdf"
+    
+    if not pdf_s3_path.startswith("s3://"):
+        pdf_s3_path = f"s3://{pdf_s3_path}"
+
+    try:
+        if fs.exists(pdf_s3_path):
+            # 🚀 Safely extract the raw PDF binary
+            file_bytes = fs.cat(pdf_s3_path)
+            
+            # 🛡️ Send with strict PDF MIME type so the browser can preview it natively
+            return Response(
+                content=file_bytes,
+                media_type='application/pdf',
+                headers={
+                    "Content-Disposition": f'attachment; filename="prism_audit_report_{run_id}.pdf"',
+                    "Content-Length": str(len(file_bytes)) 
+                }
+            )
+        else:
+            raise FileNotFoundError("Audit Report PDF not found. Try re-running the pipeline.")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report Download Error: {str(e)}")

@@ -2,17 +2,20 @@ import time
 import os
 import json
 import uuid
+import zipfile
+import io
 from typing import Dict, Any
 import traceback
 import polars as pl
 import s3fs
-
+import tempfile
 from prism_ml.agent.router import PrismRouterAgent
 from prism_ml.fix.fixer import PrismFixer
 from prism_ml.clean.cleaner import PrismCleaner
 from prism_ml.feature.engineer import PrismEngineer
 from prism_ml.train.trainer import PrismTrainer
 from prism_ml.plot.plotter import PrismPlotter
+from prism_ml.report.reporter import PrismReporter  # 🚀 NEW IMPORT
 from prism_ml.exceptions import PrismCoreError, TrainingConfigurationError
 
 class PrismDAGExecutor:
@@ -23,6 +26,7 @@ class PrismDAGExecutor:
         self.engineer = PrismEngineer()
         self.trainer = PrismTrainer()
         self.plotter = PrismPlotter() 
+        self.reporter = PrismReporter()  # 🚀 INITIALIZE REPORTER
         
         # Cloud Authentication Credentials for Fallback Loading
         self.s3_endpoint = os.getenv("MINIO_ENDPOINT_URL", "http://127.0.0.1:9000")
@@ -155,13 +159,17 @@ class PrismDAGExecutor:
                     meta = train_blueprint.get("__training_metadata__", {})
                     results["best_model"] = meta.get("best_estimator", str(model.best_estimator))
                     
-                   # 🛡️ THE BULLETPROOF FLOAT FIREWALL 🛡️
+                    # 🛡️ THE BULLETPROOF FLOAT FIREWALL 🛡️
                     raw_score = meta.get("final_score")
                     results["loss"] = float(raw_score) if raw_score is not None else None
                     
                     results["optimization_metric"] = meta.get("metric")
                     results["task_type"] = meta.get("task")
                     results["trained_model_path"] = saved_path
+
+                    # 🚀 NEW: Append SHAP interactive chart to frontend array
+                    if "shap_echart" in meta and meta["shap_echart"]:
+                        charts_data.append(meta["shap_echart"])
 
                     # ==========================================
                     # 🧠 THE DYNAMIC FORM EXTRACTOR 🧠
@@ -196,40 +204,86 @@ class PrismDAGExecutor:
                 results["charts"] = charts_data
 
             # ==========================================
-            # 3. SAVE THE ARTIFACTS
+            # 3. SAVE THE ARTIFACTS & BUILD DEPLOYMENT ZIP
             # ==========================================
             is_s3 = raw_data_path.startswith("s3://")
+            trained_model_path = results.get("trained_model_path")
             
             if is_s3:
                 directory = "/".join(raw_data_path.split("/")[:-1])
                 blueprint_path = f"{directory}/inference_blueprint_{master_run_id}.json"
                 charts_path = f"{directory}/charts_{master_run_id}.json"
+                zip_path = f"{directory}/prism_deployment_pack_{master_run_id}.zip"
                 
                 fs = s3fs.S3FileSystem(client_kwargs={'endpoint_url': self.s3_endpoint}, key=self.s3_key, secret=self.s3_secret)
+                
+                # 1. Save JSONs
                 with fs.open(blueprint_path, 'w') as f:
                     json.dump(master_blueprint, f, indent=4)
                 if charts_data:
                     with fs.open(charts_path, 'w') as f:
                         json.dump(charts_data, f, indent=4)
+
+                # 2. Build ZIP Package Safely on Local Disk FIRST
+                if trained_model_path and fs.exists(trained_model_path):
+                    print("📦 Zipping Deployment Package via secure temp directory...")
+                    
+                    with tempfile.TemporaryDirectory() as tmpdirname:
+                        local_zip = os.path.join(tmpdirname, f"prism_deployment_pack_{master_run_id}.zip")
+                        
+                        # Build and seal the zip locally on the physical disk
+                        with zipfile.ZipFile(local_zip, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            # Add JSON blueprint
+                            zip_file.writestr(f"inference_blueprint_{master_run_id}.json", json.dumps(master_blueprint, indent=4))
+                            # Add PKL model
+                            with fs.open(trained_model_path, 'rb') as model_file:
+                                zip_file.writestr(trained_model_path.split('/')[-1], model_file.read())
+                                
+                        # 3. Stream PERFECTLY SEALED ZIP back to MinIO Cloud
+                        with open(local_zip, 'rb') as sealed_zip:
+                            with fs.open(zip_path, 'wb') as cloud_file:
+                                cloud_file.write(sealed_zip.read())
+                        
+                    results["deployment_pack_path"] = zip_path
+
             else:
                 dataset_directory = os.path.dirname(raw_data_path)
                 blueprint_path = os.path.join(dataset_directory, f"inference_blueprint_{master_run_id}.json")
                 charts_path = os.path.join(dataset_directory, f"charts_{master_run_id}.json")
+                zip_path = os.path.join(dataset_directory, f"prism_deployment_pack_{master_run_id}.zip")
                 
                 with open(blueprint_path, 'w') as f:
                     json.dump(master_blueprint, f, indent=4)
                 if charts_data:
                     with open(charts_path, 'w') as f:
                         json.dump(charts_data, f, indent=4)
+                        
+                if trained_model_path and os.path.exists(trained_model_path):
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        zip_file.write(blueprint_path, f"inference_blueprint_{master_run_id}.json")
+                        zip_file.write(trained_model_path, os.path.basename(trained_model_path))
+                    results["deployment_pack_path"] = zip_path
 
             print(f"📜 Master Inference Blueprint saved at: {blueprint_path}")
+            if "deployment_pack_path" in results:
+                print(f"✅ Deployment Pack successfully built at: {results['deployment_pack_path']}")
             
             results["blueprint_path"] = blueprint_path
             results["run_id"] = master_run_id
             
-            # 🚀 THE FIX: Passing charts_path back to the engine!
             if charts_data:
                 results["charts_path"] = charts_path
+
+            # ==========================================
+            # 4. GENERATE ENTERPRISE AUDIT REPORT PDF
+            # ==========================================
+            try:
+                pdf_path = self.reporter.generate_report(master_blueprint, raw_data_path, master_run_id)
+                if pdf_path:
+                    results["report_path"] = pdf_path
+                    print(f"📄 Audit Report PDF successfully generated at: {pdf_path}")
+            except Exception as e:
+                print(f"⚠️ PDF Report generation skipped/failed: {e}")
 
             return {
                 "status": "success",

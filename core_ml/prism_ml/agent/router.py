@@ -122,14 +122,19 @@ class PrismRouterAgent:
              "exclude_columns": [] 
              (CRITICAL RULE FOR exclude_columns: You MUST explicitly list EVERY SINGLE column that represents PII, IDs, Names, Emails, Phone Numbers, Row Numbers, or any text column with Uniqueness > 50%. If you fail to exclude text columns like 'Last_Name' or 'First_Name', the One-Hot Encoder will crash the ML Matrix. Do NOT leave this empty if PII/IDs exist in the profile!)
 
-        4. "generate_plot": Use to create visualizations. 
-           - Params MUST ALWAYS include the specific columns to plot based on the schema profile.
+        4. "generate_plot": Use to create clean visualizations. 
+           - Params MUST ALWAYS include specific columns to plot based on schema.
+           - CHART SELECTION RULES:
+             * Use "scatter" ONLY for continuous vs continuous relationships.
+             * Use "histogram" for single continuous columns to show distributions.
+             * Use "boxplot" for numerical spread across categories.
+             * Use "heatmap" for correlation matrices.
            - Params: 
              "chart_type": "scatter"|"bar"|"histogram"|"boxplot"|"heatmap"
-             "x_col": "ExactColumnNameFromSchema" (Required for all except heatmap)
-             "y_col": "ExactColumnNameFromSchema" (Required for scatter, bar, boxplot)
+             "x_col": "ExactColumnNameFromSchema" 
+             "y_col": "ExactColumnNameFromSchema" (Optional for histogram)
+             "color": "ExactColumnNameFromSchema" (OPTIONAL. ONLY use a categorical column with < 10 unique values. STRICTLY PROHIBITED FOR COLUMNS HAVING > 10 UNIQUE VALUES. STRICTLY PROHIBITED for heatmaps and the charts that don't require it.)
              "title": "A descriptive title for the chart"
-            "color": "must be a categorical column from the schema" (Optional, but recommended for better plots)
         5. "train_model": Use to train ML models.
            - Params MUST strictly include:
              "target_column": "ExactColumnNameFromSchema" (Must exactly match feature_engineer target)
