@@ -124,7 +124,7 @@ class PrismReporter:
                     pdf.set_fill_color(249, 250, 251) # Gray-50
                     
                     # 🚀 FIX: The "None" String Bug
-                    method_str = rule.get('method')
+                    method_str = rule.get('strategy')
                     method_name = str(method_str).title() if method_str and str(method_str).lower() != "none" else "Auto-Calculated"
                     
                     pdf.cell(60, 10, f"  {col}", border=1, fill=fill)
