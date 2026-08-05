@@ -79,8 +79,8 @@ function Sidebar({ isSignedIn, onCanvasClick }: { isSignedIn: boolean, onCanvasC
 
         {/* Secondary Navigation (About, Contact, Login/Out) */}
         <div className="flex flex-col gap-2 p-4 border-t-4 border-black bg-white text-black overflow-hidden">
-          <SidebarItem icon={<Info className="shrink-0 text-blue-500" />} label="About Us" isOpen={isOpen} />
-          <SidebarItem icon={<Phone className="shrink-0 text-pink-500" />} label="Contact" isOpen={isOpen} />
+          <SidebarItem icon={<Info className="shrink-0 text-blue-500" />} label="About Us" isOpen={isOpen} onClick={() => router.push('/about')} />
+          <SidebarItem icon={<Phone className="shrink-0 text-pink-500" />} label="Contact" isOpen={isOpen} onClick={() => router.push('/contact')} />
           
           {isSignedIn ? (
             <SidebarItem 

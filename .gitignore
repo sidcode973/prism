@@ -45,3 +45,10 @@ observation_response.txt
 observation_v2.txt
 created_house_price_prediction.csv
 observations_v3.txt
+
+# =========================
+# 4. ANALYSIS & PRESENTATION FILES
+# =========================
+*_ANALYSIS.txt
+*_ANALYSIS_*.txt
+*_PRESENTATION.txt
