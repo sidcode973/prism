@@ -13,7 +13,6 @@ from connections import SessionLocal
 from models.database_models import PipelineRun
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
 celery_app = Celery("prism_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
 celery_app.conf.update(

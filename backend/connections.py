@@ -31,10 +31,14 @@ def get_db():
 
 # Inside connections.py
 def get_minio_client():
-    """Initializes and returns the official MinIO Python SDK client."""
-    endpoint = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000") # Force IPv4 here too!
-    access_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin") # <--- CHANGED THIS
-    secret_key = os.getenv("MINIO_SECRET_KEY", "prismpassword") # <--- CHANGED THIS
+    """Initializes and returns the official MinIO Python SDK client safely."""
+    raw_endpoint = os.getenv("MINIO_ENDPOINT_URL", "minio:9000")
+    
+    # Sanitize the endpoint string to strip out rogue http://, https://, or trailing slashes
+    endpoint = raw_endpoint.replace("http://", "").replace("https://", "").strip("/")
+    
+    access_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
+    secret_key = os.getenv("MINIO_SECRET_KEY", "prismpassword")
     
     client = Minio(
         endpoint,
