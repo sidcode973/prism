@@ -82,7 +82,10 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
-
+    volumes:
+      - ./frontend:/app             # Creates the live code tunnel
+      - /app/node_modules           # Protects the container's installed packages
+      - /app/.next
 # Persistent Volumes so data isn't wiped on restart
 volumes:
   postgres_data:

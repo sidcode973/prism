@@ -74,7 +74,7 @@ function Sidebar({ isSignedIn, onCanvasClick }: { isSignedIn: boolean, onCanvasC
             }} 
           />
           
-          <SidebarItem icon={<Settings className="shrink-0" />} label="Settings" isOpen={isOpen} />
+          {/* <SidebarItem icon={<Settings className="shrink-0" />} label="Settings" isOpen={isOpen} /> */}
         </div>
 
         {/* Secondary Navigation (About, Contact, Login/Out) */}
