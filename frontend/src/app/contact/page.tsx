@@ -4,27 +4,61 @@ import React, { useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft, Sparkles, Mail, Send, MapPin, Code,
-  Globe, MessageSquare, Clock, CheckCircle2, Bot
+  Globe, MessageSquare, Clock, CheckCircle2, Bot,
+  Loader2, AlertCircle,
 } from "lucide-react";
+
+// ============================================================
+// CONFIGURATION
+// Replace this with your real Web3Forms access key.
+// Get one free at: https://web3forms.com (enter bhavyadoriya2007@gmail.com)
+// ============================================================
+const WEB3FORMS_ACCESS_KEY = process.env.NEXT_PUBLIC_WEB3FORMS_KEY || "";
+
+type FormStatus = "idle" | "sending" | "success" | "error";
 
 export default function ContactPage() {
   const [formData, setFormData] = useState({ name: "", email: "", subject: "", message: "" });
-  const [isSubmitted, setIsSubmitted] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Build mailto link with form data
-    const mailtoSubject = encodeURIComponent(formData.subject || "Project Prism Inquiry");
-    const mailtoBody = encodeURIComponent(
-      `Name: ${formData.name}\nEmail: ${formData.email}\n\n${formData.message}`
-    );
-    window.location.href = `mailto:bhavyadoriya2007@gmail.com?subject=${mailtoSubject}&body=${mailtoBody}`;
-    setIsSubmitted(true);
-    setTimeout(() => setIsSubmitted(false), 4000);
-  };
+  const [status, setStatus] = useState<FormStatus>("idle");
+  const [errorMessage, setErrorMessage] = useState("");
 
   const updateField = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStatus("sending");
+    setErrorMessage("");
+
+    try {
+      const response = await fetch("https://api.web3forms.com/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          access_key: WEB3FORMS_ACCESS_KEY,
+          name: formData.name,
+          email: formData.email,
+          subject: formData.subject || "Project Prism Inquiry",
+          message: formData.message,
+          from_name: "Project Prism Contact Form",
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setStatus("success");
+        setFormData({ name: "", email: "", subject: "", message: "" });
+        setTimeout(() => setStatus("idle"), 5000);
+      } else {
+        setStatus("error");
+        setErrorMessage(result.message || "Something went wrong. Please try again.");
+      }
+    } catch {
+      setStatus("error");
+      setErrorMessage("Network error. Please check your connection and try again.");
+    }
   };
 
   return (
@@ -32,7 +66,6 @@ export default function ContactPage() {
 
       {/* HERO HEADER */}
       <header className="border-b-4 border-black bg-pink-400 relative overflow-hidden">
-        {/* Decorative elements */}
         <div className="absolute top-10 right-10 opacity-10 pointer-events-none -rotate-12">
           <MessageSquare size={280} strokeWidth={1} />
         </div>
@@ -120,26 +153,13 @@ export default function ContactPage() {
             <div className="bg-purple-200 border-4 border-black shadow-[8px_8px_0px_#000] rounded-2xl p-6 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#000] transition-all">
               <h3 className="font-black text-xl uppercase mb-4">CONNECT</h3>
               <div className="flex gap-3">
-                <a
-                  href="https://github.com/BhavyaDoriya"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-3 bg-white border-4 border-black rounded-xl shadow-[4px_4px_0px_#000] hover:bg-gray-100 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
-                >
+                <a href="https://github.com/BhavyaDoriya" target="_blank" rel="noopener noreferrer" className="p-3 bg-white border-4 border-black rounded-xl shadow-[4px_4px_0px_#000] hover:bg-gray-100 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all">
                   <Code size={24} />
                 </a>
-                <a
-                  href="https://linkedin.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-3 bg-white border-4 border-black rounded-xl shadow-[4px_4px_0px_#000] hover:bg-gray-100 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
-                >
+                <a href="https://linkedin.com" target="_blank" rel="noopener noreferrer" className="p-3 bg-white border-4 border-black rounded-xl shadow-[4px_4px_0px_#000] hover:bg-gray-100 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all">
                   <Globe size={24} />
                 </a>
-                <a
-                  href="mailto:bhavyadoriya2007@gmail.com"
-                  className="p-3 bg-white border-4 border-black rounded-xl shadow-[4px_4px_0px_#000] hover:bg-gray-100 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
-                >
+                <a href="mailto:bhavyadoriya2007@gmail.com" className="p-3 bg-white border-4 border-black rounded-xl shadow-[4px_4px_0px_#000] hover:bg-gray-100 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all">
                   <Mail size={24} />
                 </a>
               </div>
@@ -162,10 +182,19 @@ export default function ContactPage() {
                 Fill out the form and we&apos;ll get back to you as soon as possible.
               </p>
 
-              {isSubmitted && (
+              {/* Success Banner */}
+              {status === "success" && (
                 <div className="mb-6 p-4 bg-green-300 border-4 border-black rounded-xl font-black flex items-center gap-3 shadow-[4px_4px_0px_#000]">
                   <CheckCircle2 size={24} />
-                  Opening your email client — send the message to complete!
+                  Message sent successfully! We&apos;ll get back to you soon.
+                </div>
+              )}
+
+              {/* Error Banner */}
+              {status === "error" && (
+                <div className="mb-6 p-4 bg-red-300 border-4 border-black rounded-xl font-black flex items-center gap-3 shadow-[4px_4px_0px_#000]">
+                  <AlertCircle size={24} />
+                  {errorMessage}
                 </div>
               )}
 
@@ -238,10 +267,20 @@ export default function ContactPage() {
                 {/* Submit Button */}
                 <button
                   type="submit"
-                  className="w-full bg-black text-white border-4 border-black hover:bg-gray-800 active:translate-x-1 active:translate-y-1 active:shadow-none shadow-[6px_6px_0px_#ccc] py-4 font-black text-lg rounded-xl transition-all uppercase flex items-center justify-center gap-3"
+                  disabled={status === "sending"}
+                  className="w-full bg-black text-white border-4 border-black hover:bg-gray-800 active:translate-x-1 active:translate-y-1 active:shadow-none shadow-[6px_6px_0px_#ccc] py-4 font-black text-lg rounded-xl transition-all uppercase flex items-center justify-center gap-3 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <Send size={22} />
-                  SEND MESSAGE
+                  {status === "sending" ? (
+                    <>
+                      <Loader2 size={22} className="animate-spin" />
+                      SENDING...
+                    </>
+                  ) : (
+                    <>
+                      <Send size={22} />
+                      SEND MESSAGE
+                    </>
+                  )}
                 </button>
               </form>
             </div>
