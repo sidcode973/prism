@@ -240,7 +240,7 @@ export default function HomePage() {
               WELCOME TO PRISM.
             </h1>
             <p className="text-xl font-bold text-gray-700 max-w-2xl border-l-4 border-green-400 pl-4">
-              The world's fastest, AI-driven machine learning pipeline builder. Drag, drop, and deploy in seconds.
+              The very fast, AI-driven machine learning pipeline builder. Drag, drop, and deploy in seconds.
             </p>
           </header>
 
