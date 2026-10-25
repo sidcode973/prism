@@ -54,3 +54,5 @@ observations_v3.txt
 *_ANALYSIS.txt
 *_ANALYSIS_*.txt
 *_PRESENTATION.txt
+# Accidental nested clone of this repo (has its own .git)
+Project-Prism/
