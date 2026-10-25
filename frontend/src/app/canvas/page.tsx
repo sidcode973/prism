@@ -14,6 +14,7 @@ import NeoEdge from "./components/NeoEdge";
 import Sidebar from "./components/Sidebar";
 import BottomBar from "./components/BottomBar";
 import Inspector from "./components/Inspector";
+import { API_URL } from "@/lib/api";
 
 const nodeTypes: any = { neoNode: NeoNode };
 const edgeTypes: any = { neoEdge: NeoEdge };
@@ -55,7 +56,7 @@ function CanvasBoard() {
       const token = await getToken();
       if (!token) return;
       
-      const response = await fetch("http://localhost:8000/api/datasets", { 
+      const response = await fetch(`${API_URL}/api/datasets`, { 
         headers: { "Authorization": `Bearer ${token}` } 
       });
       
@@ -90,7 +91,7 @@ function CanvasBoard() {
       try {
         const token = await getToken();
         if (!token) return;
-        const response = await fetch(`http://localhost:8000/api/datasets/${selectedDatasetId}/columns`, { headers: { "Authorization": `Bearer ${token}` } });
+        const response = await fetch(`${API_URL}/api/datasets/${selectedDatasetId}/columns`, { headers: { "Authorization": `Bearer ${token}` } });
         if (response.ok) {
           const data = await response.json();
           setDatasetColumns(data.columns || []);
@@ -197,7 +198,7 @@ function CanvasBoard() {
         formData.append("manual_nodes", JSON.stringify(nodes));
         formData.append("manual_edges", JSON.stringify(edges));
       }
-      const response = await fetch("http://localhost:8000/api/run-pipeline", { method: "POST", headers: { "Authorization": `Bearer ${token}` }, body: formData });
+      const response = await fetch(`${API_URL}/api/run-pipeline`, { method: "POST", headers: { "Authorization": `Bearer ${token}` }, body: formData });
       if (response.ok) {
         const data = await response.json();
         

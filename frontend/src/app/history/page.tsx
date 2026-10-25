@@ -5,6 +5,7 @@ import { useAuth, UserButton } from "@clerk/nextjs";
 import { Activity, Database, BrainCircuit, Trash2, AlertCircle, Zap, Home, LayoutDashboard } from "lucide-react";
 import Link from "next/link";
 import ResultsModal from "../canvas/components/ResultsModal";
+import { API_URL } from "@/lib/api";
 
 interface PipelineHistory {
   id: string;
@@ -32,7 +33,7 @@ export default function HistoryPage() {
   const fetchHistory = async () => {
     try {
       const token = await getToken();
-      const res = await fetch("http://localhost:8000/api/history", {
+      const res = await fetch(`${API_URL}/api/history`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
@@ -55,7 +56,7 @@ export default function HistoryPage() {
     
     try {
       const token = await getToken();
-      const res = await fetch(`http://localhost:8000/api/history/${runId}`, {
+      const res = await fetch(`${API_URL}/api/history/${runId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -75,7 +76,7 @@ export default function HistoryPage() {
     setIsFetchingDetails(true);
     try {
       const token = await getToken();
-      const res = await fetch(`http://localhost:8000/api/history/${runId}/details`, {
+      const res = await fetch(`${API_URL}/api/history/${runId}/details`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {

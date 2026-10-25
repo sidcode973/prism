@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { UploadCloud, FileText, Loader2, X } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
+import { API_URL } from "@/lib/api";
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -42,7 +43,7 @@ export default function UploadModal({ isOpen, onClose, onSuccess }: UploadModalP
       const formData = new FormData();
       formData.append("file", uploadFile);
 
-      const response = await fetch("http://localhost:8000/api/datasets/upload", {
+      const response = await fetch(`${API_URL}/api/datasets/upload`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` },
         body: formData,

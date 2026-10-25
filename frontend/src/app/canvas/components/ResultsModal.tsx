@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Download, ChevronLeft, ChevronRight, BarChart3, Database, BrainCircuit, Wrench, Sparkles, Binary, Rocket, Zap, Play, CheckCircle2, Plus, Info, Copy, FileArchive, FileText } from 'lucide-react';
 import ReactECharts from 'echarts-for-react';
 import { useAuth } from "@clerk/nextjs"; 
+import { API_URL } from "@/lib/api";
 
 export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
   const [chartIndex, setChartIndex] = useState(0);
@@ -45,7 +46,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     else if (pipelineResult && pipelineResult.run_id) {
       // History Execution: Fetch permanent features from MinIO cloud blueprint
       getToken().then(token => {
-        fetch(`http://localhost:8000/api/predict/${pipelineResult.run_id}/features`, {
+        fetch(`${API_URL}/api/predict/${pipelineResult.run_id}/features`, {
           headers: { "Authorization": `Bearer ${token}` }
         })
         .then(res => res.json())
@@ -122,7 +123,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     if (!runId) return alert("⚠️ Cannot download: Run ID is missing from the results.");
     try {
       const token = await getToken();
-      const response = await fetch(`http://localhost:8000/api/download-csv?stage=${stage}&run_id=${runId}&t=${Date.now()}`, {
+      const response = await fetch(`${API_URL}/api/download-csv?stage=${stage}&run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (!response.ok) throw new Error(await response.json().then((d: any) => d?.detail).catch(() => "Download failed"));
@@ -145,7 +146,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     if (!runId) return alert("⚠️ Cannot download: Run ID is missing from the results.");
     try {
       const token = await getToken();
-      const response = await fetch(`http://localhost:8000/api/download-model?run_id=${runId}&t=${Date.now()}`, {
+      const response = await fetch(`${API_URL}/api/download-model?run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (!response.ok) throw new Error(await response.json().then((d: any) => d?.detail).catch(() => "Download failed"));
@@ -169,7 +170,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     if (!runId) return alert("⚠️ Cannot download: Run ID is missing from the results.");
     try {
       const token = await getToken();
-      const response = await fetch(`http://localhost:8000/api/download-report?run_id=${runId}&t=${Date.now()}`, {
+      const response = await fetch(`${API_URL}/api/download-report?run_id=${runId}&t=${Date.now()}`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (!response.ok) throw new Error(await response.json().then((d: any) => d?.detail).catch(() => "Download failed"));
@@ -197,7 +198,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     setIsDeploying(true);
     try {
       const token = await getToken();
-      const response = await fetch(`http://localhost:8000/api/models/deploy/${runId}`, {
+      const response = await fetch(`${API_URL}/api/models/deploy/${runId}`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -226,7 +227,7 @@ export default function ResultsModal({ isOpen, onClose, pipelineResult }: any) {
     setTestResult("Connecting to inference engine...");
     try {
       const token = await getToken();
-      const response = await fetch(`http://localhost:8000/api/predict/${runId}`, {
+      const response = await fetch(`${API_URL}/api/predict/${runId}`, {
         method: "POST",
         headers: { 
           "Authorization": `Bearer ${token}`,
