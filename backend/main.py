@@ -39,9 +39,17 @@ from celery_worker import execute_pipeline_task
 
 app = FastAPI(title="Prism MLOps Engine", version="2.0")
 
+# Browser origins allowed to call this API, comma-separated. Example:
+#   FRONTEND_ORIGINS=http://localhost:3000,https://prism-one-taupe.vercel.app
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], 
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"],

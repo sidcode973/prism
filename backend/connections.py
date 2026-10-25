@@ -36,6 +36,9 @@ def get_minio_client():
     
     # Sanitize the endpoint string to strip out rogue http://, https://, or trailing slashes
     endpoint = raw_endpoint.replace("http://", "").replace("https://", "").strip("/")
+
+    # Hosted S3 (R2, B2, AWS) is https and needs TLS; local MinIO over http does not.
+    secure = raw_endpoint.startswith("https://")
     
     access_key = os.getenv("MINIO_ACCESS_KEY", "prismadmin")
     secret_key = os.getenv("MINIO_SECRET_KEY", "prismpassword")
@@ -44,6 +47,6 @@ def get_minio_client():
         endpoint,
         access_key=access_key,
         secret_key=secret_key,
-        secure=False  
+        secure=secure  
     )
     return client
